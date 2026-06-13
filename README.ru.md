@@ -203,6 +203,41 @@ docker run --rm node:22-alpine node -e "console.log(crypto.randomUUID())"
 
 UUID в профиле RF Entry должен совпадать с UUID, который принимает Foreign Exit.
 
+## Client import URL
+
+После выполнения `./manage.sh generate-config` на RF Entry bundle создаёт subscription-файл для example user. Именно эту ссылку нужно импортировать в Hiddify или другой совместимый клиент:
+
+```text
+<project.subscriptionBaseUrl>/sub/<example.user.subscriptionToken>
+```
+
+Для значений по умолчанию:
+
+```text
+https://sub.example.com/sub/example-token-change-me
+```
+
+Если используются DuckDNS-style имена и в `runtime.jsonc` указано:
+
+```jsonc
+"project": {
+  "subscriptionBaseUrl": "https://sub-example.duckdns.org"
+},
+"example": {
+  "user": {
+    "subscriptionToken": "my-secret-token"
+  }
+}
+```
+
+то в клиент нужно импортировать этот URL:
+
+```text
+https://sub-example.duckdns.org/sub/my-secret-token
+```
+
+Локальный файл внутри RF Entry bundle находится по пути `public/sub/<token>`, но клиентам нужен публичный HTTPS URL, а не путь в файловой системе.
+
 ## Развёртывание RF Entry
 
 Скопируйте RF Entry archive на RF VPS:
@@ -231,7 +266,7 @@ vi runtime.jsonc
 public/sub/<subscriptionToken>
 ```
 
-Публичный subscription URL:
+Этот публичный subscription URL нужно импортировать в Hiddify или другой совместимый клиент:
 
 ```text
 https://sub.example.com/sub/<subscriptionToken>
