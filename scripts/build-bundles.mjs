@@ -323,7 +323,7 @@ function normalizeRuntime(runtime) {
     peers: Array.isArray(runtime.peers) ? runtime.peers : [],
     countries: Array.isArray(runtime.countries) ? runtime.countries : [],
     exitPools: Array.isArray(runtime.exitPools) ? runtime.exitPools : [],
-    example: runtime.example ?? { enabled: false, profiles: [] },
+    clientAccess: runtime.clientAccess,
   };
 }
 
@@ -354,7 +354,7 @@ function validateRuntimeConfig(runtime, target, errors) {
   for (const pool of exitPools.values()) {
     validateExitPool(pool, nodes, countries, errors);
   }
-  validateExample(runtime.example, nodes, countries, exitPools, runtime.node, errors);
+  validateClientAccess(runtime.clientAccess, nodes, countries, exitPools, runtime.node, errors);
   validateEdge(runtime, errors);
 }
 
@@ -585,98 +585,93 @@ function validateTarget(target, platforms, errors) {
   requiredString(target.configFile, "target.configFile", errors);
 }
 
-function validateExample(example, nodes, countries, exitPools, bundleNode, errors) {
-  if (!example) {
-    return { enabled: false, profiles: [] };
+function validateClientAccess(clientAccess, nodes, countries, exitPools, bundleNode, errors) {
+  if (!clientAccess || typeof clientAccess !== "object" || Array.isArray(clientAccess)) {
+    errors.push("clientAccess must be an object");
+    return;
   }
 
-  if (typeof example.enabled !== "boolean") {
-    errors.push("example.enabled must be boolean");
-  }
-  if (!example.enabled) {
-    return { enabled: false, profiles: [] };
+  if (clientAccess.enabled !== true) {
+    errors.push("clientAccess.enabled must be true");
   }
 
-  const profiles = requiredArray(example.profiles, "example.profiles", errors);
+  const profiles = requiredArray(clientAccess.profiles, "clientAccess.profiles", errors);
+  if (profiles.length === 0) {
+    errors.push("clientAccess.profiles must not be empty");
+  }
   const needsSubscriptionFields = bundleNode.role === "rf-entry" && profiles.some((profile) => profile.entryNode === bundleNode.id);
   if (needsSubscriptionFields) {
-    const user = requiredObject(example.user, "example.user", errors);
-    requiredString(user.id, "example.user.id", errors);
-    requiredString(user.plan, "example.user.plan", errors);
-    requiredString(user.subscriptionToken, "example.user.subscriptionToken", errors);
+    const user = requiredObject(clientAccess.user, "clientAccess.user", errors);
+    requiredString(user.id, "clientAccess.user.id", errors);
+    requiredString(user.plan, "clientAccess.user.plan", errors);
+    requiredString(user.subscriptionToken, "clientAccess.user.subscriptionToken", errors);
 
-    const reality = requiredObject(example.reality, "example.reality", errors);
-    requiredString(reality.sni, "example.reality.sni", errors);
-    requiredString(reality.fingerprint, "example.reality.fingerprint", errors);
-    requiredString(reality.publicKey, "example.reality.publicKey", errors);
-    requiredString(reality.shortId, "example.reality.shortId", errors);
+    const reality = requiredObject(clientAccess.reality, "clientAccess.reality", errors);
+    requiredString(reality.sni, "clientAccess.reality.sni", errors);
+    requiredString(reality.fingerprint, "clientAccess.reality.fingerprint", errors);
+    requiredString(reality.publicKey, "clientAccess.reality.publicKey", errors);
+    requiredString(reality.shortId, "clientAccess.reality.shortId", errors);
   }
 
   const profileIds = new Set();
   for (const profile of profiles) {
-    validateExampleProfile(profile, nodes, countries, exitPools, bundleNode, profileIds, errors);
+    validateClientAccessProfile(profile, nodes, countries, exitPools, bundleNode, profileIds, errors);
   }
 
-  return {
-    enabled: true,
-    user: example.user,
-    reality: example.reality,
-    profiles,
-  };
 }
 
-function validateExampleProfile(profile, nodes, countries, exitPools, bundleNode, profileIds, errors) {
+function validateClientAccessProfile(profile, nodes, countries, exitPools, bundleNode, profileIds, errors) {
   if (!profile || typeof profile !== "object") {
-    errors.push("example.profiles entries must be objects");
+    errors.push("clientAccess.profiles entries must be objects");
     return;
   }
 
-  requiredString(profile.id, "example.profile.id", errors);
+  requiredString(profile.id, "clientAccess.profile.id", errors);
   if (profileIds.has(profile.id)) {
-    errors.push(`example.profiles has duplicate id: ${profile.id}`);
+    errors.push(`clientAccess.profiles has duplicate id: ${profile.id}`);
   }
   profileIds.add(profile.id);
 
-  requiredString(profile.name, `example.profile ${profile.id}.name`, errors);
+  requiredString(profile.name, `clientAccess.profile ${profile.id}.name`, errors);
   if (!allowedModes.has(profile.mode)) {
-    errors.push(`example.profile ${profile.id} has unsupported mode ${profile.mode}`);
+    errors.push(`clientAccess.profile ${profile.id} has unsupported mode ${profile.mode}`);
   }
   if (!countries.has(profile.country)) {
-    errors.push(`example.profile ${profile.id} references missing country ${profile.country}`);
+    errors.push(`clientAccess.profile ${profile.id} references missing country ${profile.country}`);
   }
   const entryNode = nodes.get(profile.entryNode);
   if (!entryNode && profile.entryNode === bundleNode.id) {
-    errors.push(`example.profile ${profile.id} references missing entryNode ${profile.entryNode}`);
+    errors.push(`clientAccess.profile ${profile.id} references missing entryNode ${profile.entryNode}`);
   } else if (entryNode && entryNode.role !== "rf-entry") {
-    errors.push(`example.profile ${profile.id} entryNode ${profile.entryNode} is not rf-entry`);
+    errors.push(`clientAccess.profile ${profile.id} entryNode ${profile.entryNode} is not rf-entry`);
   }
   const exitPool = exitPools.get(profile.exitPool);
   if (!exitPool) {
-    errors.push(`example.profile ${profile.id} references missing exitPool ${profile.exitPool}`);
+    errors.push(`clientAccess.profile ${profile.id} references missing exitPool ${profile.exitPool}`);
   } else if (exitPool.country !== profile.country) {
-    errors.push(`example.profile ${profile.id} country ${profile.country} does not match exitPool ${profile.exitPool} country ${exitPool.country}`);
+    errors.push(`clientAccess.profile ${profile.id} country ${profile.country} does not match exitPool ${profile.exitPool} country ${exitPool.country}`);
   }
   const country = countries.get(profile.country);
   if (profile.mode === "stable" && country && !country.stableEnabled) {
-    errors.push(`example.profile ${profile.id} uses stable mode but country ${profile.country} has stableEnabled=false`);
+    errors.push(`clientAccess.profile ${profile.id} uses stable mode but country ${profile.country} has stableEnabled=false`);
   }
   if (profile.mode === "native" && country && !country.nativeEnabled) {
-    errors.push(`example.profile ${profile.id} uses native mode but country ${profile.country} has nativeEnabled=false`);
+    errors.push(`clientAccess.profile ${profile.id} uses native mode but country ${profile.country} has nativeEnabled=false`);
   }
   if (profile.mode === "stable" && entryNode && !entryNode.stable?.enabled) {
-    errors.push(`example.profile ${profile.id} uses stable mode but entryNode ${profile.entryNode} has stable.enabled=false`);
+    errors.push(`clientAccess.profile ${profile.id} uses stable mode but entryNode ${profile.entryNode} has stable.enabled=false`);
   }
   if (profile.mode === "native" && entryNode && !entryNode.native?.enabled) {
-    errors.push(`example.profile ${profile.id} uses native mode but entryNode ${profile.entryNode} has native.enabled=false`);
+    errors.push(`clientAccess.profile ${profile.id} uses native mode but entryNode ${profile.entryNode} has native.enabled=false`);
   }
   if (profile.mode === "stable" && exitPool && !exitPool.nodes.some((nodeId) => nodes.get(nodeId)?.stable?.enabled)) {
-    errors.push(`example.profile ${profile.id} uses stable mode but exitPool ${profile.exitPool} has no stable-enabled exit node`);
+    errors.push(`clientAccess.profile ${profile.id} uses stable mode but exitPool ${profile.exitPool} has no stable-enabled exit node`);
   }
   if (profile.mode === "native" && exitPool && !exitPool.nodes.some((nodeId) => nodes.get(nodeId)?.native?.enabled)) {
-    errors.push(`example.profile ${profile.id} uses native mode but exitPool ${profile.exitPool} has no native-enabled exit node`);
+    errors.push(`clientAccess.profile ${profile.id} uses native mode but exitPool ${profile.exitPool} has no native-enabled exit node`);
   }
   if (profile.mode === "stable" && !isUuid(profile.uuid)) {
-    errors.push(`example.profile ${profile.id}.uuid must be a UUID for stable mode`);
+    errors.push(`clientAccess.profile ${profile.id}.uuid must be a UUID for stable mode`);
   }
 }
 
@@ -693,7 +688,7 @@ async function renderBundle(plan, target, bundleDir, options) {
 
   await writeJson(path.join(bundleDir, "bundle.json"), bundle);
   await writeFile(path.join(bundleDir, "docker-compose.yml"), renderCompose(plan, target), "utf8");
-  await renderRuntimeExample(target, bundleDir);
+  await renderRuntimeConfigExample(target, bundleDir);
   await writeFile(path.join(bundleDir, "README.md"), renderBundleReadme(plan, target, subscription), "utf8");
 
   const manageTemplatePath = path.join(repoRoot, "templates", "manage.sh.template");
@@ -726,9 +721,9 @@ function renderBundleMetadata(plan, target) {
     nodeRole: target.role,
     targetPlatform: target.platform,
     createdAt: plan.createdAt,
-    example: {
-      enabled: target.runtime.example.enabled,
-      bootstrapUserId: target.runtime.example.enabled && target.runtime.example.user ? target.runtime.example.user.id : null,
+    clientAccess: {
+      enabled: target.runtime.clientAccess.enabled,
+      bootstrapUserId: target.runtime.clientAccess.enabled && target.runtime.clientAccess.user ? target.runtime.clientAccess.user.id : null,
     },
     images: getRuntimeImages(plan, target).map((image) => ({
       name: image,
@@ -737,11 +732,11 @@ function renderBundleMetadata(plan, target) {
   };
 }
 
-async function renderRuntimeExample(target, bundleDir) {
-  await writeFile(path.join(bundleDir, "example.config.jsonc"), renderRuntimeExampleSource(target.runtimeSource), "utf8");
+async function renderRuntimeConfigExample(target, bundleDir) {
+  await writeFile(path.join(bundleDir, "example.config.jsonc"), renderRuntimeConfigExampleSource(target.runtimeSource), "utf8");
 }
 
-function renderRuntimeExampleSource(source) {
+function renderRuntimeConfigExampleSource(source) {
   return [
     "// Copy this file to runtime.jsonc before first run:",
     "// cp example.config.jsonc runtime.jsonc",
@@ -754,21 +749,21 @@ function renderRuntimeExampleSource(source) {
 
 function renderSubscriptionConfig(target) {
   const runtime = target.runtime;
-  if (!runtime.example.enabled || target.role !== "rf-entry" || !runtime.example.user) {
+  if (!runtime.clientAccess.enabled || target.role !== "rf-entry" || !runtime.clientAccess.user) {
     return {
       enabled: false,
-      reason: target.role === "rf-entry" ? "example profiles disabled" : "subscription output is emitted by rf-entry bundles",
+      reason: target.role === "rf-entry" ? "clientAccess profiles disabled" : "subscription output is emitted by rf-entry bundles",
     };
   }
 
-  const token = runtime.example.user.subscriptionToken;
+  const token = runtime.clientAccess.user.subscriptionToken;
   const subscriptionUrl = `${runtime.project.subscriptionBaseUrl.replace(/\/$/, "")}/sub/${encodeURIComponent(token)}`;
 
   return {
     enabled: true,
     user: {
-      id: runtime.example.user.id,
-      plan: runtime.example.user.plan,
+      id: runtime.clientAccess.user.id,
+      plan: runtime.clientAccess.user.plan,
     },
     token,
     subscriptionUrl,
@@ -979,7 +974,7 @@ function renderBundleReadme(plan, target, subscription) {
     const subscriptionHost = new URL(target.runtime.project.subscriptionBaseUrl).hostname;
     lines.push(
       "",
-      "## Example subscription",
+      "## Client access subscription",
       "",
       `Public URL configured in metadata: ${subscription.subscriptionUrl}`,
       "",

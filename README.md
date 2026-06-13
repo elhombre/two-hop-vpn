@@ -11,6 +11,8 @@ Client
 
 This is an experimental project. The current configuration model supports a simple route with one RF Entry and one Foreign Exit per generated deployment example. It is intended to make the existing implementation easy to inspect and run manually, not to provide a full multi-node control plane.
 
+The runtime config is intentionally a little more structured than a hard-coded one-entry, one-exit setup. Route-mapping fields such as `countries`, `exitPools`, `peers`, `entryNode`, and `exitPool` keep the current route explicit and leave room for a future multi-entry/multi-exit model without changing the basic profile shape.
+
 ## Why
 
 Many VPN setups expose a foreign server directly to the client. That can be fragile when direct international connectivity is unstable, filtered, or inconvenient to operate. Two-hop VPN separates the public entry point from the internet exit point: users import one stable subscription URL and connect to one RF Entry hostname, while the operator can place, replace, or reconfigure Foreign Exit nodes independently.
@@ -22,11 +24,12 @@ This project is for operators who want a reproducible, inspectable deployment in
 - `Build config`: `config/examples/build.example.jsonc`. It tells the builder which node bundles to create and which Docker images they use.
 - `Bundle`: a portable `vpn-bundle/` directory or `.tar.gz` archive for one node. It contains `docker-compose.yml`, `manage.sh`, metadata, templates, and an editable runtime config example.
 - `Client`: the user's VPN app. The examples are designed around clients that can import VLESS Reality subscription links.
+- `clientAccess`: the required manual client access block in `runtime.jsonc`. It defines the subscription token, client-facing Reality parameters, and profile UUIDs used by generated Xray configs.
 - `Docker-only bundle`: a bundle built with `--save-images`, so the VPS can load images from `images/*.tar` instead of pulling them from registries.
 - `Exit pool`: a named group of Foreign Exit nodes for a country. The example uses one pool, `exit-pool-de`, with one Foreign Exit node.
 - `Foreign Exit`: the exit VPS outside Russia, or in whichever country you want traffic to exit from. It receives traffic from RF Entry and sends it to the internet, so websites see the Foreign Exit as the source IP.
 - `Generated runtime artifacts`: files under `vpn-bundle/config/` created by `./manage.sh generate-config`, including Xray, routing, HAProxy, Caddy, and subscription output.
-- `Profile`: one client-visible connection option inside the subscription, such as `Germany - Stable`. In the example config it is represented by `example.profiles[]`.
+- `Profile`: one client-visible connection option inside the subscription, such as `Germany - Stable`. In the example config it is represented by `clientAccess.profiles[]`.
 - `RF Entry`: the Russian Federation entry VPS, usually a server located in Russia. Users connect to this node first. It accepts VLESS Reality on `443/tcp`, serves the subscription domain, and forwards traffic to a Foreign Exit.
 - `Runtime config`: `runtime.jsonc` on a VPS. It is copied from `example.config.jsonc` and then customized with real domains, Reality keys, short IDs, tokens, and UUIDs.
 - `Stable transport`: the implemented transport mode in this repository. It uses Xray-core with VLESS Reality over TCP/443.
@@ -173,13 +176,13 @@ Replace at least:
 - RF Entry `peers[].host`.
 - RF Entry `node.reality.privateKey`.
 - RF Entry `node.reality.publicKey`.
-- RF Entry `example.reality.publicKey`.
+- RF Entry `clientAccess.reality.publicKey`.
 - Foreign Exit `node.reality.privateKey`.
 - Foreign Exit `node.reality.publicKey`.
 - RF Entry `peers[].reality.publicKey`.
 - Reality `shortIds`.
-- `example.user.subscriptionToken`.
-- `example.profiles[].uuid`.
+- `clientAccess.user.subscriptionToken`.
+- `clientAccess.profiles[].uuid`.
 
 Do not commit real `runtime.jsonc` files, Reality private keys, subscription tokens, UUIDs, or production environment files.
 
@@ -205,16 +208,16 @@ The UUID used by the RF Entry profile must match the UUID accepted by the Foreig
 
 ## Client Import URL
 
-After the RF Entry bundle runs `./manage.sh generate-config`, it creates a subscription file for the example user. This is the link you import into Hiddify or another compatible client:
+After the RF Entry bundle runs `./manage.sh generate-config`, it creates a subscription file for the manual client access user. This is the link you import into Hiddify or another compatible client:
 
 ```text
-<project.subscriptionBaseUrl>/sub/<example.user.subscriptionToken>
+<project.subscriptionBaseUrl>/sub/<clientAccess.user.subscriptionToken>
 ```
 
 For the default example values:
 
 ```text
-https://sub.example.com/sub/example-token-change-me
+https://sub.example.com/sub/manual-token-change-me
 ```
 
 If you use DuckDNS-style names and set:
@@ -223,7 +226,7 @@ If you use DuckDNS-style names and set:
 "project": {
   "subscriptionBaseUrl": "https://sub-example.duckdns.org"
 },
-"example": {
+"clientAccess": {
   "user": {
     "subscriptionToken": "my-secret-token"
   }

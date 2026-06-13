@@ -4,10 +4,10 @@
   // Layers:
   // - project/node/peers: live deployment settings. Review these for every VPS pair.
   // - countries/exitPools: country routing model. For one DE exit you can leave them as-is.
-  // - example: bootstrap user/profile used by the generated subscription.
+  // - clientAccess: manual client access used by the generated subscription.
 
   // Project metadata.
-  // RF Entry uses subscriptionBaseUrl to render the example subscription URL.
+  // RF Entry uses subscriptionBaseUrl to render the client subscription URL.
   // Use a dedicated subscription hostname without an explicit port. It may
   // resolve to the same VPS IP as node.host; HAProxy routes it by SNI.
   "project": {
@@ -33,7 +33,7 @@
     },
     "reality": {
       // Real TLS website used as the Reality camouflage target.
-      // Keep this in sync with serverNames and example.reality.sni.
+      // Keep this in sync with serverNames and clientAccess.reality.sni.
       "target": "www.microsoft.com:443",
       "serverNames": [
         "www.microsoft.com"
@@ -43,7 +43,7 @@
       // Put the generated Private key here. Do not commit real private keys.
       "privateKey": "REPLACE_WITH_RF_REALITY_PRIVATE_KEY",
       // Put the matching Public key here. This same RF public key is also
-      // used below in example.reality.publicKey for client share links.
+      // used below in clientAccess.reality.publicKey for client share links.
       "publicKey": "REPLACE_WITH_RF_REALITY_PUBLIC_KEY",
       // Reality short IDs are hex strings, usually 8-16 bytes.
       // Generate one with: openssl rand -hex 8
@@ -127,7 +127,7 @@
   "exitPools": [
     {
       // Exit pool ids are local runtime identifiers. Profiles reference them
-      // through example.profiles[].exitPool.
+      // through clientAccess.profiles[].exitPool.
       "id": "exit-pool-de",
       "country": "DE",
       "nodes": [
@@ -136,18 +136,18 @@
     }
   ],
 
-  // Example fixture.
-  // This creates one bootstrap user/profile for manual deployment:
+  // Manual client access.
+  // This creates one user/profile for manual deployment:
   // Client -> RF Entry -> Foreign Exit -> Internet.
   // Replace token, UUID, domains, and Reality keys before using it publicly.
-  "example": {
+  "clientAccess": {
     "enabled": true,
     "user": {
-      "id": "example-user",
-      "plan": "example",
-      // Random secret URL token for the example subscription.
+      "id": "manual-user",
+      "plan": "manual",
+      // Random secret URL token for the client subscription.
       // Generate one with: openssl rand -hex 24
-      "subscriptionToken": "example-token-change-me"
+      "subscriptionToken": "manual-token-change-me"
     },
     "reality": {
       // SNI used in the client share link. Keep it compatible with RF
@@ -161,7 +161,7 @@
     },
     "profiles": [
       {
-        "id": "example-user-de-stable",
+        "id": "manual-user-de-stable",
         "name": "Germany - Stable",
         "country": "DE",
         "mode": "stable",

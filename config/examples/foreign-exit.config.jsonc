@@ -4,7 +4,7 @@
   // Layers:
   // - project/node: live deployment settings. Review node before every VPS run.
   // - countries/exitPools: country routing model. For one DE exit you can leave them as-is.
-  // - example: temporary inbound credentials that must match RF Entry example profile.
+  // - clientAccess: inbound credentials that must match RF Entry client profile.
 
   // Project metadata.
   // Foreign Exit does not publish subscriptions,
@@ -84,15 +84,15 @@
     }
   ],
 
-  // Example fixture.
+  // Manual client access.
   // Foreign Exit only needs inbound user credentials. It does not
   // need subscriptionToken or client Reality public key. UUIDs here must match
-  // RF Entry example profiles, otherwise RF can connect but the exit rejects auth.
-  "example": {
+  // RF Entry clientAccess profiles, otherwise RF can connect but the exit rejects auth.
+  "clientAccess": {
     "enabled": true,
     "profiles": [
       {
-        "id": "example-user-de-stable",
+        "id": "manual-user-de-stable",
         "name": "Germany - Stable",
         "country": "DE",
         "mode": "stable",

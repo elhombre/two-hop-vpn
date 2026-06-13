@@ -137,7 +137,7 @@ function normalizeRuntime(runtime) {
     nodes: [runtime.node, ...(Array.isArray(runtime.peers) ? runtime.peers : [])],
     countries: runtime.countries ?? [],
     exitPools: runtime.exitPools ?? [],
-    example: runtime.example ?? { enabled: false },
+    clientAccess: runtime.clientAccess,
   };
 }
 
@@ -247,7 +247,7 @@ function renderExampleNotes(context, subscription) {
   ];
 
   if (subscription.enabled) {
-    lines.push("", `Example subscription URL: ${subscription.subscriptionUrl}`);
+    lines.push("", `Client access subscription URL: ${subscription.subscriptionUrl}`);
   }
 
   return `${lines.join("\n")}\n`;
@@ -368,7 +368,7 @@ function validateRuntime(runtime, bundle) {
   for (const pool of exitPools.values()) {
     validateExitPool(pool, nodes, countries, errors);
   }
-  validateExample(runtime.example, nodes, countries, exitPools, bundle, errors);
+  validateClientAccess(runtime.clientAccess, nodes, countries, exitPools, bundle, errors);
   validateEdge(runtime, bundle, errors);
 
   return errors;
@@ -490,34 +490,53 @@ function validateExitPool(pool, nodes, countries, errors) {
   }
 }
 
-function validateExample(example, nodes, countries, exitPools, bundle, errors) {
-  if (!example?.enabled) {
+function validateClientAccess(clientAccess, nodes, countries, exitPools, bundle, errors) {
+  if (!clientAccess || typeof clientAccess !== "object" || Array.isArray(clientAccess)) {
+    errors.push("clientAccess must be an object");
     return;
   }
-  const profiles = requiredArray(example.profiles, "example.profiles", errors);
+  if (clientAccess.enabled !== true) {
+    errors.push("clientAccess.enabled must be true");
+  }
+  const profiles = requiredArray(clientAccess.profiles, "clientAccess.profiles", errors);
+  if (profiles.length === 0) {
+    errors.push("clientAccess.profiles must not be empty");
+  }
   const needsSubscriptionFields = bundle.nodeRole === "rf-entry" && profiles.some((profile) => profile.entryNode === bundle.nodeId);
 
   if (needsSubscriptionFields) {
-    const user = requiredObject(example.user, "example.user", errors);
-    requiredString(user.id, "example.user.id", errors);
-    requiredString(user.subscriptionToken, "example.user.subscriptionToken", errors);
-    const reality = requiredObject(example.reality, "example.reality", errors);
-    requiredString(reality.sni, "example.reality.sni", errors);
-    requiredString(reality.publicKey, "example.reality.publicKey", errors);
-    requiredString(reality.shortId, "example.reality.shortId", errors);
+    const user = requiredObject(clientAccess.user, "clientAccess.user", errors);
+    requiredString(user.id, "clientAccess.user.id", errors);
+    requiredString(user.subscriptionToken, "clientAccess.user.subscriptionToken", errors);
+    const reality = requiredObject(clientAccess.reality, "clientAccess.reality", errors);
+    requiredString(reality.sni, "clientAccess.reality.sni", errors);
+    requiredString(reality.publicKey, "clientAccess.reality.publicKey", errors);
+    requiredString(reality.shortId, "clientAccess.reality.shortId", errors);
   }
 
   for (const profile of profiles) {
+    if (!profile || typeof profile !== "object") {
+      errors.push("clientAccess.profiles entries must be objects");
+      continue;
+    }
+    requiredString(profile.id, "clientAccess.profile.id", errors);
     if (profile.entryNode === bundle.nodeId && !nodes.has(profile.entryNode)) {
-      errors.push(`example.profile ${profile.id} references missing entryNode ${profile.entryNode}`);
+      errors.push(`clientAccess.profile ${profile.id} references missing entryNode ${profile.entryNode}`);
     }
     if (!countries.has(profile.country)) {
-      errors.push(`example.profile ${profile.id} references missing country ${profile.country}`);
+      errors.push(`clientAccess.profile ${profile.id} references missing country ${profile.country}`);
     }
     if (!exitPools.has(profile.exitPool)) {
-      errors.push(`example.profile ${profile.id} references missing exitPool ${profile.exitPool}`);
+      errors.push(`clientAccess.profile ${profile.id} references missing exitPool ${profile.exitPool}`);
+    }
+    if (profile.mode === "stable" && !isUuid(profile.uuid)) {
+      errors.push(`clientAccess.profile ${profile.id}.uuid must be a UUID for stable mode`);
     }
   }
+}
+
+function isUuid(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function validateEdge(runtime, bundle, errors) {
@@ -556,7 +575,7 @@ function renderRuntimeGenerated(runtime) {
     nodes: runtime.nodes,
     countries: runtime.countries,
     exitPools: runtime.exitPools,
-    example: runtime.example,
+    clientAccess: runtime.clientAccess,
   };
 }
 
@@ -564,8 +583,8 @@ function renderRoutingConfig(runtime, node) {
   return {
     countries: runtime.countries,
     exitPools: runtime.exitPools,
-    profiles: runtime.example?.enabled
-      ? runtime.example.profiles.map((profile) => ({
+    profiles: runtime.clientAccess?.enabled
+      ? runtime.clientAccess.profiles.map((profile) => ({
           id: profile.id,
           name: profile.name,
           country: profile.country,
@@ -580,23 +599,23 @@ function renderRoutingConfig(runtime, node) {
 }
 
 function renderSubscriptionConfig(runtime, node) {
-  if (!runtime.example?.enabled || node.role !== "rf-entry") {
+  if (!runtime.clientAccess?.enabled || node.role !== "rf-entry") {
     return {
       enabled: false,
-      reason: node.role === "rf-entry" ? "example profiles disabled" : "subscription output is emitted by rf-entry bundles",
+      reason: node.role === "rf-entry" ? "clientAccess profiles disabled" : "subscription output is emitted by rf-entry bundles",
     };
   }
-  const token = runtime.example.user.subscriptionToken;
+  const token = runtime.clientAccess.user.subscriptionToken;
   return {
     enabled: true,
     user: {
-      id: runtime.example.user.id,
-      plan: runtime.example.user.plan,
+      id: runtime.clientAccess.user.id,
+      plan: runtime.clientAccess.user.plan,
     },
     token,
     subscriptionUrl: `${runtime.project.subscriptionBaseUrl.replace(/\/$/, "")}/sub/${encodeURIComponent(token)}`,
     formats: ["raw-share-links"],
-    profiles: runtime.example.profiles
+    profiles: runtime.clientAccess.profiles
       .filter((profile) => profile.entryNode === node.id)
       .map((profile) => ({
         id: profile.id,
@@ -610,7 +629,7 @@ function renderSubscriptionConfig(runtime, node) {
 }
 
 function renderVlessLink(runtime, node, profile) {
-  const reality = runtime.example.reality;
+  const reality = runtime.clientAccess.reality;
   const params = new URLSearchParams({
     type: "tcp",
     security: "reality",
@@ -719,7 +738,7 @@ function renderXrayConfig(runtime, node) {
 }
 
 function renderRfEntryXrayConfig(runtime, node) {
-  const profiles = runtime.example?.enabled ? runtime.example.profiles.filter((profile) => profile.entryNode === node.id && profile.mode === "stable") : [];
+  const profiles = runtime.clientAccess?.enabled ? runtime.clientAccess.profiles.filter((profile) => profile.entryNode === node.id && profile.mode === "stable") : [];
   const outbounds = [];
   const rules = [];
   for (const profile of profiles) {
@@ -738,8 +757,8 @@ function renderRfEntryXrayConfig(runtime, node) {
 }
 
 function renderForeignExitXrayConfig(runtime, node) {
-  const profiles = runtime.example?.enabled
-    ? runtime.example.profiles.filter((profile) => profile.mode === "stable" && runtime.exitPools.find((pool) => pool.id === profile.exitPool)?.nodes.includes(node.id))
+  const profiles = runtime.clientAccess?.enabled
+    ? runtime.clientAccess.profiles.filter((profile) => profile.mode === "stable" && runtime.exitPools.find((pool) => pool.id === profile.exitPool)?.nodes.includes(node.id))
     : [];
   return {
     log: { loglevel: "warning" },
