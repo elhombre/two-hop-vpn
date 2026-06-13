@@ -1,0 +1,106 @@
+{
+  // This file is copied to runtime.jsonc on the Foreign Exit VPS.
+  //
+  // Layers:
+  // - project/node: live deployment settings. Review node before every VPS run.
+  // - countries/exitPools: country routing model. For one DE exit you can leave them as-is.
+  // - example: temporary inbound credentials that must match RF Entry example profile.
+
+  // Project metadata.
+  // Foreign Exit does not publish subscriptions,
+  // but the metadata is kept so generated files have the same shape across roles.
+  "project": {
+    "name": "two-hop-vpn",
+    // Kept for consistent metadata. Foreign Exit does not publish the
+    // subscription endpoint.
+    "subscriptionBaseUrl": "https://sub.example.com"
+  },
+
+  // Local VPS settings.
+  // This block describes the current Foreign Exit server and must be adjusted
+  // before a real deployment: host, ports if needed, and Reality keys.
+  "node": {
+    "id": "foreign-1",
+    "role": "foreign-exit",
+    "country": "DE",
+    // Public DNS name for the foreign VPS. RF Entry must use the same host
+    // in its peer config.
+    "host": "foreign.example.com",
+    "stable": {
+      "enabled": true,
+      "port": 443
+    },
+    "reality": {
+      // Foreign Exit exposes a Reality-protected VLESS inbound for RF Entry.
+      "target": "www.microsoft.com:443",
+      "serverNames": [
+        "www.microsoft.com"
+      ],
+      // Generate a Reality key pair on this VPS or another secure machine:
+      // docker run --rm ghcr.io/xtls/xray-core:latest x25519
+      // Put the generated Private key here. Do not commit real private keys.
+      "privateKey": "REPLACE_WITH_FOREIGN_REALITY_PRIVATE_KEY",
+      // Put the matching Public key here and copy it to RF peer config.
+      "publicKey": "REPLACE_WITH_FOREIGN_REALITY_PUBLIC_KEY",
+      // Generate with: openssl rand -hex 8
+      "shortIds": [
+        "fedcba9876543210"
+      ],
+      "fingerprint": "chrome",
+      "spiderX": "/"
+    },
+    "native": {
+      "enabled": false
+    },
+    "health": {
+      "enabled": true,
+      "port": 8080
+    }
+  },
+
+  // Country routing model.
+  // This is intentionally present even though Foreign Exit only needs local
+  // inbound config, so RF and Foreign runtime configs stay aligned.
+  "countries": [
+    {
+      "code": "DE",
+      "name": "Germany",
+      "stableEnabled": true,
+      "nativeEnabled": false,
+      "exitPool": "exit-pool-de"
+    }
+  ],
+
+  // Exit routing model.
+  // In this Foreign Exit bundle the pool points to the local node. RF Entry has
+  // a matching pool that points to this node as a peer.
+  "exitPools": [
+    {
+      "id": "exit-pool-de",
+      "country": "DE",
+      "nodes": [
+        "foreign-1"
+      ]
+    }
+  ],
+
+  // Example fixture.
+  // Foreign Exit only needs inbound user credentials. It does not
+  // need subscriptionToken or client Reality public key. UUIDs here must match
+  // RF Entry example profiles, otherwise RF can connect but the exit rejects auth.
+  "example": {
+    "enabled": true,
+    "profiles": [
+      {
+        "id": "example-user-de-stable",
+        "name": "Germany - Stable",
+        "country": "DE",
+        "mode": "stable",
+        "entryNode": "rf-1",
+        "exitPool": "exit-pool-de",
+        // Must match the RF Entry profile UUID.
+        "uuid": "00000000-0000-4000-8000-000000000001"
+      }
+    ]
+  }
+}

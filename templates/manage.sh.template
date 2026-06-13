@@ -1,0 +1,341 @@
+#!/bin/sh
+set -eu
+
+APP_NAME="__APP_NAME__"
+NODE_ID="__NODE_ID__"
+NODE_ROLE="__NODE_ROLE__"
+MANAGE_IMAGE="__MANAGE_IMAGE__"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+
+usage() {
+  cat <<EOF
+Usage: ./manage.sh <command>
+
+Commands:
+  load      Load Docker images from images/*.tar
+  up        Start the Docker Compose stack
+  down      Stop the Docker Compose stack
+  restart   Restart the Docker Compose stack
+  status    Show a short stack status
+  ps        Show Docker Compose services
+  logs      Show or follow logs
+  config    Print rendered Docker Compose config
+  validate  Validate runtime JSONC via bundled manage helper
+  generate-config
+            Generate runtime artifacts from runtime JSONC
+  doctor    Check host requirements and bundle files
+EOF
+}
+
+compose() {
+  docker compose -f "$COMPOSE_FILE" "$@"
+}
+
+require_runtime_config() {
+  if [ -f runtime.jsonc ]; then
+    return 0
+  fi
+
+  echo "ERROR: missing runtime.jsonc"
+  echo "Copy example.config.jsonc to runtime.jsonc and customize it before running this command:"
+  echo "  cp example.config.jsonc runtime.jsonc"
+  return 1
+}
+
+require_runtime_artifacts() {
+  missing=0
+  for path in config/node.generated.json config/runtime.generated.json config/routing.generated.json config/xray.generated.json; do
+    if [ ! -f "$path" ]; then
+      echo "ERROR: missing $path"
+      missing=1
+    fi
+  done
+  if [ "$NODE_ROLE" = "rf-entry" ]; then
+    for path in config/haproxy.generated.cfg config/Caddyfile.generated; do
+      if [ ! -f "$path" ]; then
+        echo "ERROR: missing $path"
+        missing=1
+      fi
+    done
+  fi
+
+  if [ "$missing" -ne 0 ]; then
+    if [ ! -f runtime.jsonc ]; then
+      echo "ERROR: missing runtime.jsonc"
+      echo "Copy example.config.jsonc to runtime.jsonc, or pass an external config to generate-config:"
+      echo "  cp example.config.jsonc runtime.jsonc"
+      echo "  ./manage.sh generate-config --config-file ../runtime.jsonc"
+    fi
+    echo "Run './manage.sh validate' and './manage.sh generate-config' before running this command."
+    return 1
+  fi
+
+  return 0
+}
+
+run_manage() {
+  config_file="$(find_manage_config_file "$@")"
+
+  if [ -n "$config_file" ]; then
+    host_config_file="$(resolve_host_path "$config_file")"
+    if [ ! -f "$host_config_file" ]; then
+      echo "ERROR: runtime config file does not exist: $config_file"
+      return 1
+    fi
+
+    docker run --rm \
+      -u "$(id -u):$(id -g)" \
+      -v "$PWD:/bundle" \
+      -v "$host_config_file:/runtime-config/input.jsonc:ro" \
+      -e MANAGE_CONFIG_FILE=/runtime-config/input.jsonc \
+      -w /bundle \
+      "$MANAGE_IMAGE" \
+      node /bundle/manage/manage.mjs "$@"
+    return
+  fi
+
+  docker run --rm \
+    -u "$(id -u):$(id -g)" \
+    -v "$PWD:/bundle" \
+    -w /bundle \
+    "$MANAGE_IMAGE" \
+    node /bundle/manage/manage.mjs "$@"
+}
+
+find_manage_config_file() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --config-file|--config-path)
+        shift
+        if [ "$#" -eq 0 ]; then
+          return
+        fi
+        printf '%s\n' "$1"
+        return
+        ;;
+    esac
+    shift
+  done
+}
+
+resolve_host_path() {
+  case "$1" in
+    /*)
+      input_path="$1"
+      ;;
+    *)
+      input_path="$PWD/$1"
+      ;;
+  esac
+
+  input_dir="$(dirname "$input_path")"
+  input_base="$(basename "$input_path")"
+  if [ ! -d "$input_dir" ]; then
+    printf '%s\n' "$input_path"
+    return
+  fi
+
+  input_dir="$(cd "$input_dir" && pwd -P)"
+  printf '%s/%s\n' "$input_dir" "$input_base"
+}
+
+cmd_load() {
+  if [ ! -d images ]; then
+    echo "No images/ directory found."
+    echo "Run the builder with --save-images to create Docker-only VPS bundles."
+    return
+  fi
+
+  loaded=0
+  for image in images/*.tar; do
+    if [ ! -f "$image" ]; then
+      continue
+    fi
+    echo "Loading $image"
+    docker load -i "$image"
+    loaded=$((loaded + 1))
+  done
+
+  if [ "$loaded" -eq 0 ]; then
+    echo "No image tar files found in images/."
+    echo "Run the builder with --save-images to create Docker-only VPS bundles."
+  fi
+}
+
+cmd_up() {
+  require_runtime_artifacts
+  compose up -d
+}
+
+cmd_down() {
+  compose down
+}
+
+cmd_restart() {
+  require_runtime_artifacts
+  compose down
+  compose up -d
+}
+
+cmd_status() {
+  echo "Project: $APP_NAME"
+  echo "Node: $NODE_ID"
+  echo "Role: $NODE_ROLE"
+  compose ps
+}
+
+cmd_ps() {
+  compose ps "$@"
+}
+
+cmd_logs() {
+  compose logs "$@"
+}
+
+cmd_config() {
+  echo "== docker-compose.yml =="
+  compose config
+  echo
+  echo "== bundle.json =="
+  cat bundle.json
+  echo
+  if [ ! -d config ]; then
+    echo "== runtime artifacts =="
+    echo "config/ does not exist yet. Run './manage.sh generate-config' first."
+    return
+  fi
+  echo "== config/node.generated.json =="
+  cat config/node.generated.json
+  echo
+  echo "== config/runtime.generated.json =="
+  cat config/runtime.generated.json
+  echo
+  echo "== config/xray.generated.json =="
+  cat config/xray.generated.json
+  if [ "$NODE_ROLE" = "rf-entry" ]; then
+    echo
+    echo "== config/haproxy.generated.cfg =="
+    cat config/haproxy.generated.cfg
+    echo
+    echo "== config/Caddyfile.generated =="
+    cat config/Caddyfile.generated
+  fi
+}
+
+cmd_validate() {
+  run_manage validate "$@"
+}
+
+cmd_generate_config() {
+  run_manage generate-config "$@"
+}
+
+cmd_doctor() {
+  ok=1
+
+  echo "Checking bundle for $APP_NAME node $NODE_ID ($NODE_ROLE)"
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: docker is not installed or not in PATH"
+    ok=0
+  else
+    echo "OK: docker found"
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    echo "OK: docker compose plugin found"
+  else
+    echo "ERROR: docker compose plugin is not available"
+    ok=0
+  fi
+
+  for path in bundle.json "$COMPOSE_FILE" manage/manage.mjs example.config.jsonc; do
+    if [ -f "$path" ]; then
+      echo "OK: $path"
+    else
+      echo "ERROR: missing $path"
+      ok=0
+    fi
+  done
+
+  for path in manage; do
+    if [ -d "$path" ]; then
+      echo "OK: $path/"
+    else
+      echo "ERROR: missing $path/"
+      ok=0
+    fi
+  done
+
+  if grep -q "build:" "$COMPOSE_FILE"; then
+    echo "ERROR: docker-compose.yml must not contain build:"
+    ok=0
+  else
+    echo "OK: docker-compose.yml has no build steps"
+  fi
+
+  if [ -d images ]; then
+    image_count=0
+    for image in images/*.tar; do
+      if [ -f "$image" ]; then
+        image_count=$((image_count + 1))
+      fi
+    done
+
+    if [ "$image_count" -eq 0 ]; then
+      echo "WARN: images/ exists but no saved Docker images were found; ./manage.sh up may try to pull images from the registry"
+    else
+      echo "OK: found $image_count saved Docker image(s)"
+    fi
+  else
+    echo "WARN: images/ is absent; ./manage.sh up may try to pull images from the registry"
+  fi
+
+  if [ -f runtime.jsonc ]; then
+    echo "OK: runtime.jsonc"
+  else
+    echo "WARN: runtime.jsonc is absent; copy example.config.jsonc to runtime.jsonc and customize it before generate-config"
+  fi
+
+  for path in config/node.generated.json config/runtime.generated.json config/routing.generated.json config/xray.generated.json; do
+    if [ -f "$path" ]; then
+      echo "OK: $path"
+    else
+      echo "WARN: missing $path; run './manage.sh generate-config' after runtime.jsonc is ready"
+    fi
+  done
+
+  if [ "$ok" -eq 1 ]; then
+    echo "Doctor passed"
+    echo "Run './manage.sh validate' for runtime JSONC validation."
+    exit 0
+  fi
+
+  echo "Doctor failed"
+  exit 1
+}
+
+command="${1:-}"
+if [ -n "$command" ]; then
+  shift
+fi
+
+case "$command" in
+  load) cmd_load "$@" ;;
+  up) cmd_up "$@" ;;
+  down) cmd_down "$@" ;;
+  restart) cmd_restart "$@" ;;
+  status) cmd_status "$@" ;;
+  ps) cmd_ps "$@" ;;
+  logs) cmd_logs "$@" ;;
+  config) cmd_config "$@" ;;
+  validate) cmd_validate "$@" ;;
+  generate-config) cmd_generate_config "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *)
+    echo "Unknown command: $command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

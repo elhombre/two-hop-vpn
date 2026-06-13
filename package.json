@@ -1,0 +1,9 @@
+{
+  "name": "two-hop-vpn",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-bundles.mjs --build-config config/examples/build.example.jsonc --target-platform linux/amd64",
+    "build:images": "node scripts/build-bundles.mjs --build-config config/examples/build.example.jsonc --target-platform linux/amd64 --save-images"
+  }
+}

@@ -1,0 +1,8 @@
+dist/
+runtime.jsonc
+*.local.jsonc
+*.env
+*.tar
+*.tar.gz
+.DS_Store
+._*

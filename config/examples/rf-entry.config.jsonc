@@ -1,0 +1,176 @@
+{
+  // This file is copied to runtime.jsonc on the RF Entry VPS.
+  //
+  // Layers:
+  // - project/node/peers: live deployment settings. Review these for every VPS pair.
+  // - countries/exitPools: country routing model. For one DE exit you can leave them as-is.
+  // - example: bootstrap user/profile used by the generated subscription.
+
+  // Project metadata.
+  // RF Entry uses subscriptionBaseUrl to render the example subscription URL.
+  // Use a dedicated subscription hostname without an explicit port. It may
+  // resolve to the same VPS IP as node.host; HAProxy routes it by SNI.
+  "project": {
+    "name": "two-hop-vpn",
+    // Public HTTPS base URL that the client imports:
+    // https://sub.example.com/sub/<subscriptionToken>
+    "subscriptionBaseUrl": "https://sub.example.com"
+  },
+
+  // Local VPS settings.
+  // This block describes the current RF Entry server and must be adjusted before
+  // a real deployment: host, ports if needed, and Reality keys.
+  "node": {
+    "id": "rf-1",
+    "role": "rf-entry",
+    "country": "RU",
+    // Public DNS name for Reality/VLESS connections. Use a domain, not a
+    // temporary IP. It may resolve to the same IP as subscriptionBaseUrl.
+    "host": "vpn.example.com",
+    "stable": {
+      "enabled": true,
+      "port": 443
+    },
+    "reality": {
+      // Real TLS website used as the Reality camouflage target.
+      // Keep this in sync with serverNames and example.reality.sni.
+      "target": "www.microsoft.com:443",
+      "serverNames": [
+        "www.microsoft.com"
+      ],
+      // Generate a Reality key pair on a machine with Docker:
+      // docker run --rm ghcr.io/xtls/xray-core:latest x25519
+      // Put the generated Private key here. Do not commit real private keys.
+      "privateKey": "REPLACE_WITH_RF_REALITY_PRIVATE_KEY",
+      // Put the matching Public key here. This same RF public key is also
+      // used below in example.reality.publicKey for client share links.
+      "publicKey": "REPLACE_WITH_RF_REALITY_PUBLIC_KEY",
+      // Reality short IDs are hex strings, usually 8-16 bytes.
+      // Generate one with: openssl rand -hex 8
+      "shortIds": [
+        "0123456789abcdef"
+      ],
+      "fingerprint": "chrome",
+      "spiderX": "/"
+    },
+    "native": {
+      "enabled": false
+    },
+    "health": {
+      "enabled": true,
+      "port": 8080
+    },
+    "subscription": {
+      "enabled": true,
+      // Internal HTTP port used by the subscription container. It is not
+      // published on the VPS firewall; HAProxy+Caddy expose HTTPS on 443.
+      "port": 8081
+    }
+  },
+
+  // Cross-node wiring.
+  // RF Entry needs public connection parameters for each Foreign Exit it can
+  // route to. Do not put the foreign private key here.
+  "peers": [
+    {
+      "id": "foreign-1",
+      "role": "foreign-exit",
+      "country": "DE",
+      // Public DNS name for the foreign VPS. RF Entry connects to this host
+      // when forwarding Stable traffic to the selected exit country.
+      "host": "foreign.example.com",
+      "stable": {
+        "enabled": true,
+        "port": 443
+      },
+      "reality": {
+        "target": "www.microsoft.com:443",
+        "serverNames": [
+          "www.microsoft.com"
+        ],
+        // Public key generated on the Foreign Exit VPS with:
+        // docker run --rm ghcr.io/xtls/xray-core:latest x25519
+        "publicKey": "REPLACE_WITH_FOREIGN_REALITY_PUBLIC_KEY",
+        // Must be one of Foreign Exit node.reality.shortIds.
+        "shortIds": [
+          "fedcba9876543210"
+        ],
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      },
+      "native": {
+        "enabled": false
+      },
+      "health": {
+        "enabled": true,
+        "port": 8080
+      }
+    }
+  ],
+
+  // Country routing model.
+  // For the single-country example you normally do not need to touch this
+  // unless you change the exit country.
+  "countries": [
+    {
+      "code": "DE",
+      "name": "Germany",
+      "stableEnabled": true,
+      "nativeEnabled": false,
+      "exitPool": "exit-pool-de"
+    }
+  ],
+
+  // Exit routing model.
+  // Exit pools connect country/mode selection to concrete Foreign Exit nodes.
+  // For the single-country example this is a single-node pool.
+  "exitPools": [
+    {
+      // Exit pool ids are local runtime identifiers. Profiles reference them
+      // through example.profiles[].exitPool.
+      "id": "exit-pool-de",
+      "country": "DE",
+      "nodes": [
+        "foreign-1"
+      ]
+    }
+  ],
+
+  // Example fixture.
+  // This creates one bootstrap user/profile for manual deployment:
+  // Client -> RF Entry -> Foreign Exit -> Internet.
+  // Replace token, UUID, domains, and Reality keys before using it publicly.
+  "example": {
+    "enabled": true,
+    "user": {
+      "id": "example-user",
+      "plan": "example",
+      // Random secret URL token for the example subscription.
+      // Generate one with: openssl rand -hex 24
+      "subscriptionToken": "example-token-change-me"
+    },
+    "reality": {
+      // SNI used in the client share link. Keep it compatible with RF
+      // node.reality.serverNames and target.
+      "sni": "www.microsoft.com",
+      "fingerprint": "chrome",
+      // Must be the RF Entry Reality public key.
+      "publicKey": "REPLACE_WITH_RF_REALITY_PUBLIC_KEY",
+      // Must be one of RF Entry node.reality.shortIds.
+      "shortId": "0123456789abcdef"
+    },
+    "profiles": [
+      {
+        "id": "example-user-de-stable",
+        "name": "Germany - Stable",
+        "country": "DE",
+        "mode": "stable",
+        "entryNode": "rf-1",
+        "exitPool": "exit-pool-de",
+        // Stable VLESS user UUID. Generate one with:
+        // docker run --rm node:22-alpine node -e "console.log(crypto.randomUUID())"
+        "uuid": "00000000-0000-4000-8000-000000000001"
+      }
+    ]
+  }
+}

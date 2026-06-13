@@ -1,0 +1,49 @@
+{
+  // Build metadata and deterministic timestamps for reviewable output.
+  "build": {
+    "bundleVersion": 1,
+    "createdAt": "2026-06-12T00:00:00.000Z"
+  },
+
+  // Runtime image names used by generated Docker Compose files and manage helpers.
+  // Use exact tags for production deployments.
+  "images": {
+    // Xray runtime image used by RF Entry and Foreign Exit services.
+    "xray": "ghcr.io/xtls/xray-core:latest",
+    // Minimal static HTTP server for the RF Entry subscription file.
+    "busybox": "busybox:1.36.1",
+    // RF Entry edge router. It publishes 80/443 and routes by SNI:
+    // subscription domain -> Caddy, everything else -> Xray Reality.
+    "haproxy": "haproxy:2.9-alpine",
+    // RF Entry HTTPS server for the subscription domain.
+    "caddy": "caddy:2.8-alpine",
+    // Lightweight Node.js image used only by manage.sh to run manage/manage.mjs.
+    "node": "node:22-alpine"
+  },
+
+  // Build targets are explicit. The builder may run on macOS, Linux, or CI.
+  "platforms": [
+    "linux/amd64"
+  ],
+
+  "targets": [
+    {
+      "kind": "node",
+      // Role plus platform derive the archive/stage target id:
+      // rf-entry-linux-amd64.
+      "role": "rf-entry",
+      "platform": "linux/amd64",
+      // This node-specific config is copied into the bundle as example.config.jsonc.
+      "configFile": "config/examples/rf-entry.config.jsonc"
+    },
+    {
+      "kind": "node",
+      // Role plus platform derive the archive/stage target id:
+      // foreign-exit-linux-amd64.
+      "role": "foreign-exit",
+      "platform": "linux/amd64",
+      // This node-specific config is copied into the bundle as example.config.jsonc.
+      "configFile": "config/examples/foreign-exit.config.jsonc"
+    }
+  ]
+}
