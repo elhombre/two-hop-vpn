@@ -612,6 +612,7 @@ function validateClientAccess(clientAccess, nodes, countries, exitPools, bundleN
     requiredString(reality.publicKey, "clientAccess.reality.publicKey", errors);
     requiredString(reality.shortId, "clientAccess.reality.shortId", errors);
   }
+  validateClientAccessTransport(clientAccess.transport, errors);
 
   const profileIds = new Set();
   for (const profile of profiles) {
@@ -667,11 +668,57 @@ function validateClientAccessProfile(profile, nodes, countries, exitPools, bundl
   if (profile.mode === "stable" && exitPool && !exitPool.nodes.some((nodeId) => nodes.get(nodeId)?.stable?.enabled)) {
     errors.push(`clientAccess.profile ${profile.id} uses stable mode but exitPool ${profile.exitPool} has no stable-enabled exit node`);
   }
+  if (profile.exitNode !== undefined) {
+    requiredString(profile.exitNode, `clientAccess.profile ${profile.id}.exitNode`, errors);
+    const exitNode = nodes.get(profile.exitNode);
+    if (!exitNode) {
+      errors.push(`clientAccess.profile ${profile.id} references missing exitNode ${profile.exitNode}`);
+    } else if (exitNode.role !== "foreign-exit") {
+      errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not foreign-exit`);
+    } else if (!exitNode.stable?.enabled) {
+      errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} has stable.enabled=false`);
+    } else if (exitPool && !exitPool.nodes.includes(profile.exitNode)) {
+      errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not part of exitPool ${profile.exitPool}`);
+    }
+  }
   if (profile.mode === "native" && exitPool && !exitPool.nodes.some((nodeId) => nodes.get(nodeId)?.native?.enabled)) {
     errors.push(`clientAccess.profile ${profile.id} uses native mode but exitPool ${profile.exitPool} has no native-enabled exit node`);
   }
   if (profile.mode === "stable" && !isUuid(profile.uuid)) {
     errors.push(`clientAccess.profile ${profile.id}.uuid must be a UUID for stable mode`);
+  }
+}
+
+function validateClientAccessTransport(transport, errors) {
+  if (transport === undefined) {
+    return;
+  }
+  if (!transport || typeof transport !== "object" || Array.isArray(transport)) {
+    errors.push("clientAccess.transport must be an object");
+    return;
+  }
+  validateFlow(transport.clientFlow, "clientAccess.transport.clientFlow", errors);
+  validateFlow(transport.exitFlow, "clientAccess.transport.exitFlow", errors);
+  if (transport.exitMux !== undefined) {
+    if (!transport.exitMux || typeof transport.exitMux !== "object" || Array.isArray(transport.exitMux)) {
+      errors.push("clientAccess.transport.exitMux must be an object");
+    } else {
+      if (typeof transport.exitMux.enabled !== "boolean") {
+        errors.push("clientAccess.transport.exitMux.enabled must be boolean");
+      }
+      if (transport.exitMux.concurrency !== undefined && (!Number.isInteger(transport.exitMux.concurrency) || transport.exitMux.concurrency < 1 || transport.exitMux.concurrency > 1024)) {
+        errors.push("clientAccess.transport.exitMux.concurrency must be an integer between 1 and 1024");
+      }
+    }
+  }
+}
+
+function validateFlow(value, pathName, errors) {
+  if (value === undefined) {
+    return;
+  }
+  if (!["none", "xtls-rprx-vision"].includes(value)) {
+    errors.push(`${pathName} must be one of: none, xtls-rprx-vision`);
   }
 }
 

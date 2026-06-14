@@ -513,6 +513,7 @@ function validateClientAccess(clientAccess, nodes, countries, exitPools, bundle,
     requiredString(reality.publicKey, "clientAccess.reality.publicKey", errors);
     requiredString(reality.shortId, "clientAccess.reality.shortId", errors);
   }
+  validateClientAccessTransport(clientAccess.transport, errors);
 
   for (const profile of profiles) {
     if (!profile || typeof profile !== "object") {
@@ -528,10 +529,56 @@ function validateClientAccess(clientAccess, nodes, countries, exitPools, bundle,
     }
     if (!exitPools.has(profile.exitPool)) {
       errors.push(`clientAccess.profile ${profile.id} references missing exitPool ${profile.exitPool}`);
+    } else if (profile.exitNode !== undefined) {
+      requiredString(profile.exitNode, `clientAccess.profile ${profile.id}.exitNode`, errors);
+      const exitNode = nodes.get(profile.exitNode);
+      const exitPool = exitPools.get(profile.exitPool);
+      if (!exitNode) {
+        errors.push(`clientAccess.profile ${profile.id} references missing exitNode ${profile.exitNode}`);
+      } else if (exitNode.role !== "foreign-exit") {
+        errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not foreign-exit`);
+      } else if (!exitNode.stable?.enabled) {
+        errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} has stable.enabled=false`);
+      } else if (!exitPool.nodes.includes(profile.exitNode)) {
+        errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not part of exitPool ${profile.exitPool}`);
+      }
     }
     if (profile.mode === "stable" && !isUuid(profile.uuid)) {
       errors.push(`clientAccess.profile ${profile.id}.uuid must be a UUID for stable mode`);
     }
+  }
+}
+
+function validateClientAccessTransport(transport, errors) {
+  if (transport === undefined) {
+    return;
+  }
+  if (!transport || typeof transport !== "object" || Array.isArray(transport)) {
+    errors.push("clientAccess.transport must be an object");
+    return;
+  }
+  validateFlow(transport.clientFlow, "clientAccess.transport.clientFlow", errors);
+  validateFlow(transport.exitFlow, "clientAccess.transport.exitFlow", errors);
+  if (transport.exitMux !== undefined) {
+    if (!transport.exitMux || typeof transport.exitMux !== "object" || Array.isArray(transport.exitMux)) {
+      errors.push("clientAccess.transport.exitMux must be an object");
+    } else {
+      if (typeof transport.exitMux.enabled !== "boolean") {
+        errors.push("clientAccess.transport.exitMux.enabled must be boolean");
+      }
+      if (transport.exitMux.concurrency !== undefined && (!Number.isInteger(transport.exitMux.concurrency) || transport.exitMux.concurrency < 1 || transport.exitMux.concurrency > 1024)) {
+        errors.push("clientAccess.transport.exitMux.concurrency must be an integer between 1 and 1024");
+      }
+    }
+  }
+}
+
+function validateFlow(value, pathName, errors) {
+  if (value === undefined) {
+    return;
+  }
+  if (!["none", "xtls-rprx-vision"].includes(value)) {
+    errors.push(`${pathName} must be one of: none, xtls-rprx-vision`);
   }
 }
 
@@ -592,7 +639,8 @@ function renderRoutingConfig(runtime, node) {
           strictCountry: profile.mode !== "auto",
           entryNode: profile.entryNode,
           exitPool: profile.exitPool,
-          visibleOnNode: node.id === profile.entryNode || runtime.exitPools.find((pool) => pool.id === profile.exitPool)?.nodes.includes(node.id),
+          exitNode: profile.exitNode ?? null,
+          visibleOnNode: node.id === profile.entryNode || profileTargetsExitNode(runtime, profile, node.id),
         }))
       : [],
   };
@@ -634,12 +682,15 @@ function renderVlessLink(runtime, node, profile) {
     type: "tcp",
     security: "reality",
     encryption: "none",
-    flow: "xtls-rprx-vision",
     sni: reality.sni,
     fp: reality.fingerprint,
     pbk: reality.publicKey,
     sid: reality.shortId,
   });
+  const flow = clientFlow(runtime.clientAccess);
+  if (flow) {
+    params.set("flow", flow);
+  }
   return `vless://${profile.uuid}@${node.host}:${node.stable.port}?${params.toString()}#${encodeURIComponent(profile.name)}`;
 }
 
@@ -742,15 +793,15 @@ function renderRfEntryXrayConfig(runtime, node) {
   const outbounds = [];
   const rules = [];
   for (const profile of profiles) {
-    const exitNode = firstExitNodeForProfile(runtime, profile);
+    const exitNode = exitNodeForProfile(runtime, profile);
     const outboundTag = `stable-${profile.country.toLowerCase()}-${exitNode.id}`;
-    outbounds.push(renderVlessRealityOutbound(outboundTag, exitNode, profile));
+    outbounds.push(renderVlessRealityOutbound(runtime.clientAccess, outboundTag, exitNode, profile));
     rules.push({ type: "field", user: [profileEmail(profile)], outboundTag });
   }
   outbounds.push({ tag: "blocked", protocol: "blackhole", settings: {} });
   return {
     log: { loglevel: "warning" },
-    inbounds: [renderVlessRealityInbound("client-stable-in", node, profiles)],
+    inbounds: [renderVlessRealityInbound("client-stable-in", node, profiles, clientFlow(runtime.clientAccess))],
     outbounds,
     routing: { domainStrategy: "AsIs", rules },
   };
@@ -758,11 +809,11 @@ function renderRfEntryXrayConfig(runtime, node) {
 
 function renderForeignExitXrayConfig(runtime, node) {
   const profiles = runtime.clientAccess?.enabled
-    ? runtime.clientAccess.profiles.filter((profile) => profile.mode === "stable" && runtime.exitPools.find((pool) => pool.id === profile.exitPool)?.nodes.includes(node.id))
+    ? runtime.clientAccess.profiles.filter((profile) => profile.mode === "stable" && profileTargetsExitNode(runtime, profile, node.id))
     : [];
   return {
     log: { loglevel: "warning" },
-    inbounds: [renderVlessRealityInbound("rf-stable-in", node, profiles)],
+    inbounds: [renderVlessRealityInbound("rf-stable-in", node, profiles, exitFlow(runtime.clientAccess))],
     outbounds: [
       { tag: "direct", protocol: "freedom", settings: {} },
       { tag: "blocked", protocol: "blackhole", settings: {} },
@@ -771,18 +822,17 @@ function renderForeignExitXrayConfig(runtime, node) {
   };
 }
 
-function renderVlessRealityInbound(tag, node, profiles) {
+function renderVlessRealityInbound(tag, node, profiles, flow) {
   return {
     tag,
     listen: "0.0.0.0",
     port: xrayStableListenPort(node),
     protocol: "vless",
     settings: {
-      clients: profiles.map((profile) => ({
+      clients: profiles.map((profile) => withOptionalFlow({
         id: profile.uuid,
         email: profileEmail(profile),
-        flow: "xtls-rprx-vision",
-      })),
+      }, flow)),
       decryption: "none",
     },
     streamSettings: {
@@ -809,8 +859,8 @@ function xrayStableListenPort(node) {
   return node.role === "rf-entry" && node.subscription?.enabled ? edgePorts.xrayStableBackend : node.stable.port;
 }
 
-function renderVlessRealityOutbound(tag, exitNode, profile) {
-  return {
+function renderVlessRealityOutbound(clientAccess, tag, exitNode, profile) {
+  const outbound = {
     tag,
     protocol: "vless",
     settings: {
@@ -823,7 +873,7 @@ function renderVlessRealityOutbound(tag, exitNode, profile) {
               id: profile.uuid,
               email: profileEmail(profile),
               encryption: "none",
-              flow: "xtls-rprx-vision",
+              ...optionalFlow(exitFlow(clientAccess)),
             },
           ],
         },
@@ -842,12 +892,59 @@ function renderVlessRealityOutbound(tag, exitNode, profile) {
       },
     },
   };
+  const mux = exitMux(clientAccess);
+  if (mux.enabled) {
+    outbound.mux = {
+      enabled: true,
+      concurrency: mux.concurrency,
+    };
+  }
+  return outbound;
+}
+
+function profileTargetsExitNode(runtime, profile, nodeId) {
+  return exitNodeForProfile(runtime, profile)?.id === nodeId;
+}
+
+function exitNodeForProfile(runtime, profile) {
+  if (profile.exitNode) {
+    return runtime.nodes.find((node) => node.id === profile.exitNode);
+  }
+  return firstExitNodeForProfile(runtime, profile);
 }
 
 function firstExitNodeForProfile(runtime, profile) {
   const pool = runtime.exitPools.find((candidate) => candidate.id === profile.exitPool);
   const nodeId = pool.nodes.find((candidate) => runtime.nodes.find((node) => node.id === candidate)?.stable?.enabled);
   return runtime.nodes.find((node) => node.id === nodeId);
+}
+
+function clientFlow(clientAccess) {
+  return normalizeFlow(clientAccess?.transport?.clientFlow ?? "xtls-rprx-vision");
+}
+
+function exitFlow(clientAccess) {
+  return normalizeFlow(clientAccess?.transport?.exitFlow ?? "none");
+}
+
+function exitMux(clientAccess) {
+  const mux = clientAccess?.transport?.exitMux;
+  return {
+    enabled: mux?.enabled ?? true,
+    concurrency: mux?.concurrency ?? 8,
+  };
+}
+
+function normalizeFlow(value) {
+  return value === "none" ? undefined : value;
+}
+
+function optionalFlow(flow) {
+  return flow ? { flow } : {};
+}
+
+function withOptionalFlow(value, flow) {
+  return flow ? { ...value, flow } : value;
 }
 
 function profileEmail(profile) {

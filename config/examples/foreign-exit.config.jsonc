@@ -3,7 +3,8 @@
   //
   // Layers:
   // - project/node: live deployment settings. Review node before every VPS run.
-  // - countries/exitPools: country routing model. For one DE exit you can leave them as-is.
+  // - countries/exitPools: country routing model. For one Foreign Exit you can
+  //   leave the pool pointing to the local node.
   // - clientAccess: inbound credentials that must match RF Entry client profile.
 
   // Project metadata.
@@ -90,14 +91,25 @@
   // RF Entry clientAccess profiles, otherwise RF can connect but the exit rejects auth.
   "clientAccess": {
     "enabled": true,
+    "transport": {
+      // Must match RF Entry clientAccess.transport. Foreign Exit only uses
+      // exitFlow for RF Entry -> Foreign Exit inbound clients.
+      "clientFlow": "xtls-rprx-vision",
+      "exitFlow": "none",
+      "exitMux": {
+        "enabled": true,
+        "concurrency": 8
+      }
+    },
     "profiles": [
       {
-        "id": "manual-user-de-stable",
-        "name": "Germany - Stable",
+        "id": "manual-user-de-foreign-1",
+        "name": "Germany - Foreign 1",
         "country": "DE",
         "mode": "stable",
         "entryNode": "rf-1",
         "exitPool": "exit-pool-de",
+        "exitNode": "foreign-1",
         // Must match the RF Entry profile UUID.
         "uuid": "00000000-0000-4000-8000-000000000001"
       }

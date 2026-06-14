@@ -3,7 +3,8 @@
   //
   // Layers:
   // - project/node/peers: live deployment settings. Review these for every VPS pair.
-  // - countries/exitPools: country routing model. For one DE exit you can leave them as-is.
+  // - countries/exitPools: country routing model. The example shows one country
+  //   with two concrete Foreign Exit nodes for manual client-side switching.
   // - clientAccess: manual client access used by the generated subscription.
 
   // Project metadata.
@@ -70,7 +71,7 @@
 
   // Cross-node wiring.
   // RF Entry needs public connection parameters for each Foreign Exit it can
-  // route to. Do not put the foreign private key here.
+  // route to. Do not put foreign private keys here.
   "peers": [
     {
       "id": "foreign-1",
@@ -105,6 +106,37 @@
         "enabled": true,
         "port": 8080
       }
+    },
+    {
+      "id": "foreign-2",
+      "role": "foreign-exit",
+      "country": "DE",
+      // Optional second exit for the same country. Remove this block if you
+      // deploy only one Foreign Exit.
+      "host": "foreign-2.example.com",
+      "stable": {
+        "enabled": true,
+        "port": 443
+      },
+      "reality": {
+        "target": "www.microsoft.com:443",
+        "serverNames": [
+          "www.microsoft.com"
+        ],
+        "publicKey": "REPLACE_WITH_SECOND_FOREIGN_REALITY_PUBLIC_KEY",
+        "shortIds": [
+          "0011223344556677"
+        ],
+        "fingerprint": "chrome",
+        "spiderX": "/"
+      },
+      "native": {
+        "enabled": false
+      },
+      "health": {
+        "enabled": true,
+        "port": 8080
+      }
     }
   ],
 
@@ -123,7 +155,8 @@
 
   // Exit routing model.
   // Exit pools connect country/mode selection to concrete Foreign Exit nodes.
-  // For the single-country example this is a single-node pool.
+  // Profiles can point to a concrete node in this pool with exitNode. That
+  // makes each exit appear as a separate client profile in the subscription.
   "exitPools": [
     {
       // Exit pool ids are local runtime identifiers. Profiles reference them
@@ -131,13 +164,14 @@
       "id": "exit-pool-de",
       "country": "DE",
       "nodes": [
-        "foreign-1"
+        "foreign-1",
+        "foreign-2"
       ]
     }
   ],
 
   // Manual client access.
-  // This creates one user/profile for manual deployment:
+  // This creates two user-visible profiles for manual deployment:
   // Client -> RF Entry -> Foreign Exit -> Internet.
   // Replace token, UUID, domains, and Reality keys before using it publicly.
   "clientAccess": {
@@ -159,17 +193,40 @@
       // Must be one of RF Entry node.reality.shortIds.
       "shortId": "0123456789abcdef"
     },
+    "transport": {
+      // Client -> RF Entry keeps Vision enabled for client compatibility.
+      "clientFlow": "xtls-rprx-vision",
+      // RF Entry -> Foreign Exit uses no Vision flow and enables mux. This
+      // keeps a small number of long-lived inter-node TCP connections and is
+      // more stable on many commodity VPS networks.
+      "exitFlow": "none",
+      "exitMux": {
+        "enabled": true,
+        "concurrency": 8
+      }
+    },
     "profiles": [
       {
-        "id": "manual-user-de-stable",
-        "name": "Germany - Stable",
+        "id": "manual-user-de-foreign-1",
+        "name": "Germany - Foreign 1",
         "country": "DE",
         "mode": "stable",
         "entryNode": "rf-1",
         "exitPool": "exit-pool-de",
+        "exitNode": "foreign-1",
         // Stable VLESS user UUID. Generate one with:
         // docker run --rm node:22-alpine node -e "console.log(crypto.randomUUID())"
         "uuid": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "manual-user-de-foreign-2",
+        "name": "Germany - Foreign 2",
+        "country": "DE",
+        "mode": "stable",
+        "entryNode": "rf-1",
+        "exitPool": "exit-pool-de",
+        "exitNode": "foreign-2",
+        "uuid": "00000000-0000-4000-8000-000000000002"
       }
     ]
   }

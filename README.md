@@ -9,9 +9,9 @@ Client
   -> Internet
 ```
 
-This is an experimental project. The current configuration model supports a simple route with one RF Entry and one Foreign Exit per generated deployment example. It is intended to make the existing implementation easy to inspect and run manually, not to provide a full multi-node control plane.
+This is an experimental project. The current configuration model supports a simple route with one RF Entry and one or more manually declared Foreign Exit nodes. It is intended to make the existing implementation easy to inspect and run manually, not to provide a full multi-node control plane.
 
-The runtime config is intentionally a little more structured than a hard-coded one-entry, one-exit setup. Route-mapping fields such as `countries`, `exitPools`, `peers`, `entryNode`, and `exitPool` keep the current route explicit and leave room for a future multi-entry/multi-exit model without changing the basic profile shape.
+The runtime config is intentionally a little more structured than a hard-coded one-entry, one-exit setup. Route-mapping fields such as `countries`, `exitPools`, `peers`, `entryNode`, `exitPool`, and `exitNode` keep each route explicit and leave room for a future multi-entry/multi-exit model without changing the basic profile shape.
 
 ## Why
 
@@ -24,12 +24,14 @@ This project is for operators who want a reproducible, inspectable deployment in
 - `Build config`: `config/examples/build.example.jsonc`. It tells the builder which node bundles to create and which Docker images they use.
 - `Bundle`: a portable `vpn-bundle/` directory or `.tar.gz` archive for one node. It contains `docker-compose.yml`, `manage.sh`, metadata, templates, and an editable runtime config example.
 - `Client`: the user's VPN app. The examples are designed around clients that can import VLESS Reality subscription links.
-- `clientAccess`: the required manual client access block in `runtime.jsonc`. It defines the subscription token, client-facing Reality parameters, and profile UUIDs used by generated Xray configs.
+- `clientAccess`: the required manual client access block in `runtime.jsonc`. It defines the subscription token, client-facing Reality parameters, inter-node transport settings, and profile UUIDs used by generated Xray configs.
 - `Docker-only bundle`: a bundle built with `--save-images`, so the VPS can load images from `images/*.tar` instead of pulling them from registries.
-- `Exit pool`: a named group of Foreign Exit nodes for a country. The example uses one pool, `exit-pool-de`, with one Foreign Exit node.
+- `Exit pool`: a named group of Foreign Exit nodes for a country. The RF Entry example uses one pool, `exit-pool-de`, with two optional Foreign Exit nodes.
+- `exitNode`: an optional `clientAccess.profiles[]` field that pins one client-visible profile to one concrete Foreign Exit node from its `exitPool`.
 - `Foreign Exit`: the exit VPS outside Russia, or in whichever country you want traffic to exit from. It receives traffic from RF Entry and sends it to the internet, so websites see the Foreign Exit as the source IP.
 - `Generated runtime artifacts`: files under `vpn-bundle/config/` created by `./manage.sh generate-config`, including Xray, routing, HAProxy, Caddy, and subscription output.
-- `Profile`: one client-visible connection option inside the subscription, such as `Germany - Stable`. In the example config it is represented by `clientAccess.profiles[]`.
+- `Inter-node transport`: the RF Entry to Foreign Exit connection. By default it uses VLESS Reality without XTLS Vision flow and with Xray mux enabled, so browser traffic can reuse a small number of long-lived TCP connections between VPS hosts.
+- `Profile`: one client-visible connection option inside the subscription, such as `Germany - Foreign 1`. In the example config it is represented by `clientAccess.profiles[]`.
 - `RF Entry`: the Russian Federation entry VPS, usually a server located in Russia. Users connect to this node first. It accepts VLESS Reality on `443/tcp`, serves the subscription domain, and forwards traffic to a Foreign Exit.
 - `Runtime config`: `runtime.jsonc` on a VPS. It is copied from `example.config.jsonc` and then customized with real domains, Reality keys, short IDs, tokens, and UUIDs.
 - `Stable transport`: the implemented transport mode in this repository. It uses Xray-core with VLESS Reality over TCP/443.
@@ -45,7 +47,7 @@ The repository builds portable `vpn-bundle` archives for both node roles. A bund
 ## What This Repository Provides
 
 - RF Entry and Foreign Exit node bundle generation.
-- A simple one-entry, one-exit deployment model for the example configuration.
+- A simple one-entry deployment model with one or more manually declared Foreign Exit profiles.
 - VLESS Reality TCP/443 stable transport through Xray-core.
 - A generated subscription file served from the RF Entry node.
 - HAProxy and Caddy edge routing on the RF Entry node, so the same VPS can publish both Reality and HTTPS subscription domains on `80/tcp` and `443/tcp`.
@@ -142,10 +144,11 @@ sub.example.com -> RF Entry VPS IP
 - `vpn.example.com` is the VLESS Reality hostname from `node.host`.
 - `sub.example.com` is the HTTPS subscription hostname from `project.subscriptionBaseUrl`.
 
-The Foreign Exit node needs its own public hostname:
+Each Foreign Exit node needs its own public hostname:
 
 ```text
 foreign.example.com -> Foreign Exit VPS IP
+foreign-2.example.com -> optional second Foreign Exit VPS IP
 ```
 
 You do not need to buy a domain for a basic test deployment. Any public DNS or dynamic DNS provider is enough, as long as you can point hostnames to the VPS public IP addresses. For example, a free dynamic DNS service such as DuckDNS can provide hostnames under `duckdns.org`.
@@ -156,6 +159,7 @@ Example with DuckDNS-style names:
 vpn-example.duckdns.org -> RF Entry VPS IP
 sub-example.duckdns.org -> RF Entry VPS IP
 exit-example.duckdns.org -> Foreign Exit VPS IP
+exit-2-example.duckdns.org -> optional second Foreign Exit VPS IP
 ```
 
 For production use, a domain you control is preferable. Free dynamic DNS services can change limits, availability, or terms independently of this project.
@@ -183,6 +187,7 @@ Replace at least:
 - Reality `shortIds`.
 - `clientAccess.user.subscriptionToken`.
 - `clientAccess.profiles[].uuid`.
+- `clientAccess.profiles[].exitNode`, if you add, remove, or rename Foreign Exit nodes.
 
 Do not commit real `runtime.jsonc` files, Reality private keys, subscription tokens, UUIDs, or production environment files.
 
@@ -205,6 +210,50 @@ docker run --rm node:22-alpine node -e "console.log(crypto.randomUUID())"
 ```
 
 The UUID used by the RF Entry profile must match the UUID accepted by the Foreign Exit profile.
+
+To expose several Foreign Exit nodes in Hiddify or another subscription client, create one `clientAccess.profiles[]` entry per exit. Each profile must have a unique `id`, `name`, and `uuid`, and should set `exitNode` to the concrete Foreign Exit node:
+
+```jsonc
+"profiles": [
+  {
+    "id": "manual-user-de-foreign-1",
+    "name": "Germany - Foreign 1",
+    "country": "DE",
+    "mode": "stable",
+    "entryNode": "rf-1",
+    "exitPool": "exit-pool-de",
+    "exitNode": "foreign-1",
+    "uuid": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "id": "manual-user-de-foreign-2",
+    "name": "Germany - Foreign 2",
+    "country": "DE",
+    "mode": "stable",
+    "entryNode": "rf-1",
+    "exitPool": "exit-pool-de",
+    "exitNode": "foreign-2",
+    "uuid": "00000000-0000-4000-8000-000000000002"
+  }
+]
+```
+
+The client imports one subscription URL, then shows these profiles as separate connection options. Switching between exits is done in the client; RF Entry does not automatically balance traffic between exits.
+
+The default inter-node transport is defined in `clientAccess.transport`:
+
+```jsonc
+"transport": {
+  "clientFlow": "xtls-rprx-vision",
+  "exitFlow": "none",
+  "exitMux": {
+    "enabled": true,
+    "concurrency": 8
+  }
+}
+```
+
+`clientFlow` is used for Client -> RF Entry links in the subscription. `exitFlow` and `exitMux` are used for RF Entry -> Foreign Exit links. The default keeps Vision on the client-facing hop, but disables Vision and enables mux on the inter-node hop for better stability on commodity VPS networks.
 
 ## Client Import URL
 
