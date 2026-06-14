@@ -10,7 +10,6 @@ const repoRoot = path.resolve(__dirname, "..");
 
 const allowedRoles = new Set(["rf-entry", "foreign-exit"]);
 const allowedKinds = new Set(["node"]);
-const allowedModes = new Set(["stable", "native", "auto"]);
 const edgePorts = {
   http: 80,
   tls: 443,
@@ -60,7 +59,6 @@ async function main() {
 
     outputs.push({
       target: target.id,
-      node: target.node.id,
       role: target.role,
       platform: target.platform,
       bundleDir,
@@ -74,7 +72,6 @@ async function main() {
     targetCount: outputs.length,
     outputs: outputs.map((output) => ({
       target: output.target,
-      node: output.node,
       role: output.role,
       platform: output.platform,
       archive: output.archive ? path.relative(repoRoot, output.archive) : null,
@@ -244,6 +241,7 @@ async function resolvePlan(config, selectedPlatforms) {
   const build = optionalObject(config.build, "build", errors) ?? {};
   const bundleVersion = typeof build.bundleVersion === "number" ? build.bundleVersion : 1;
   const createdAt = typeof build.createdAt === "string" ? build.createdAt : new Date().toISOString();
+  const project = validateProject(config.project, errors);
   const images = validateImages(config.images, errors);
 
   const platforms = requiredArray(config.platforms, "platforms", errors);
@@ -266,15 +264,7 @@ async function resolvePlan(config, selectedPlatforms) {
     if (!selected.includes(target.platform)) {
       continue;
     }
-    if (typeof target.configFile !== "string" || target.configFile.length === 0) {
-      continue;
-    }
-
-    const configPath = path.resolve(repoRoot, target.configFile);
-    const loaded = await readJsonc(configPath);
-    const runtime = normalizeRuntime(loaded.value);
-    validateRuntimeConfig(runtime, target, errors);
-    const role = target.role ?? runtime.node.role;
+    const role = target.role;
     const targetId = target.id ?? deriveTargetId(role, target.platform);
     if (targetIds.has(targetId)) {
       errors.push(`targets has duplicate derived id: ${targetId}`);
@@ -285,10 +275,6 @@ async function resolvePlan(config, selectedPlatforms) {
       ...target,
       id: targetId,
       role,
-      node: runtime.node,
-      runtime,
-      runtimeSource: loaded.source,
-      runtimeSourcePath: path.relative(repoRoot, configPath),
     });
   }
 
@@ -301,7 +287,7 @@ async function resolvePlan(config, selectedPlatforms) {
   }
 
   return {
-    project: targets[0]?.runtime.project ?? { name: "two-hop-vpn", subscriptionBaseUrl: "" },
+    project,
     images,
     bundleVersion,
     createdAt,
@@ -311,81 +297,19 @@ async function resolvePlan(config, selectedPlatforms) {
   };
 }
 
-function deriveTargetId(role, platform) {
-  return `${role}-${platform.replace(/[^a-zA-Z0-9_.-]+/g, "-")}`;
-}
-
-function normalizeRuntime(runtime) {
-  const node = requiredObject(runtime.node, "node", []);
+function validateProject(project, errors) {
+  if (project === undefined) {
+    return { name: "two-hop-vpn" };
+  }
+  const value = requiredObject(project, "project", errors);
+  requiredString(value.name, "project.name", errors);
   return {
-    ...runtime,
-    node,
-    peers: Array.isArray(runtime.peers) ? runtime.peers : [],
-    countries: Array.isArray(runtime.countries) ? runtime.countries : [],
-    exitPools: Array.isArray(runtime.exitPools) ? runtime.exitPools : [],
-    clientAccess: runtime.clientAccess,
+    name: typeof value.name === "string" && value.name.length > 0 ? value.name : "two-hop-vpn",
   };
 }
 
-function validateRuntimeConfig(runtime, target, errors) {
-  const prefix = `target config ${target.configFile}`;
-  const project = requiredObject(runtime.project, `${prefix}.project`, errors);
-  requiredString(project.name, `${prefix}.project.name`, errors);
-  requiredString(project.subscriptionBaseUrl, `${prefix}.project.subscriptionBaseUrl`, errors);
-
-  validateNode(runtime.node, `${prefix}.node`, true, errors);
-  if (target.role !== undefined && runtime.node.role !== target.role) {
-    errors.push(`target ${target.configFile} role ${target.role} does not match config node role ${runtime.node.role}`);
-  }
-  if (target.node !== undefined && runtime.node.id !== target.node) {
-    errors.push(`target ${target.configFile} node ${target.node} does not match config node id ${runtime.node.id}`);
-  }
-
-  const nodes = mapById([runtime.node, ...runtime.peers], `${prefix}.nodes`, errors);
-  const countries = mapByKey(runtime.countries, "code", `${prefix}.countries`, errors);
-  const exitPools = mapById(runtime.exitPools, `${prefix}.exitPools`, errors);
-
-  for (const peer of runtime.peers) {
-    validateNode(peer, `${prefix}.peer ${peer.id}`, false, errors);
-  }
-  for (const country of countries.values()) {
-    validateCountry(country, exitPools, errors);
-  }
-  for (const pool of exitPools.values()) {
-    validateExitPool(pool, nodes, countries, errors);
-  }
-  validateClientAccess(runtime.clientAccess, nodes, countries, exitPools, runtime.node, errors);
-  validateEdge(runtime, errors);
-}
-
-function validateEdge(runtime, errors) {
-  const node = runtime.node;
-  if (node.role !== "rf-entry" || !node.subscription?.enabled) {
-    return;
-  }
-
-  const subscriptionUrl = parseUrl(runtime.project.subscriptionBaseUrl);
-  if (!subscriptionUrl) {
-    errors.push("project.subscriptionBaseUrl must be a valid URL");
-    return;
-  }
-  if (subscriptionUrl.protocol !== "https:") {
-    errors.push("project.subscriptionBaseUrl must use https:// when RF edge is enabled");
-  }
-  if (subscriptionUrl.port) {
-    errors.push("project.subscriptionBaseUrl must not include a port when RF edge is enabled");
-  }
-  if (subscriptionUrl.hostname === node.host) {
-    errors.push("project.subscriptionBaseUrl hostname must differ from node.host so HAProxy can route subscription and Reality by SNI");
-  }
-}
-
-function parseUrl(value) {
-  try {
-    return new URL(value);
-  } catch {
-    return null;
-  }
+function deriveTargetId(role, platform) {
+  return `${role}-${platform.replace(/[^a-zA-Z0-9_.-]+/g, "-")}`;
 }
 
 function requiredObject(value, pathName, errors) {
@@ -432,138 +356,6 @@ function validateImages(images, errors) {
   return { xray, busybox, node, haproxy, caddy };
 }
 
-function mapById(items, pathName, errors) {
-  return mapByKey(items, "id", pathName, errors);
-}
-
-function mapByKey(items, key, pathName, errors) {
-  const map = new Map();
-  for (const item of items) {
-    if (!item || typeof item !== "object") {
-      errors.push(`${pathName} entries must be objects`);
-      continue;
-    }
-    if (typeof item[key] !== "string" || item[key].length === 0) {
-      errors.push(`${pathName} entry is missing string ${key}`);
-      continue;
-    }
-    if (map.has(item[key])) {
-      errors.push(`${pathName} has duplicate ${key}: ${item[key]}`);
-      continue;
-    }
-    map.set(item[key], item);
-  }
-  return map;
-}
-
-function validateNode(node, pathName, requirePrivateKey, errors) {
-  if (!allowedRoles.has(node.role)) {
-    errors.push(`${pathName} has unsupported role ${node.role}`);
-  }
-  requiredString(node.id, `${pathName}.id`, errors);
-  requiredString(node.host, `${pathName}.host`, errors);
-  requiredString(node.country, `${pathName}.country`, errors);
-  validateCapability(node.stable, `${pathName}.stable`, true, errors);
-  if (node.stable?.enabled) {
-    validateReality(node.reality, `${pathName}.reality`, requirePrivateKey, errors);
-  }
-  validateCapability(node.native, `${pathName}.native`, false, errors);
-  validateCapability(node.health, `${pathName}.health`, false, errors);
-  if (node.subscription !== undefined) {
-    validateCapability(node.subscription, `${pathName}.subscription`, false, errors);
-  }
-  validatePortConflicts(node, errors);
-}
-
-function validateReality(reality, pathName, requirePrivateKey, errors) {
-  if (!reality || typeof reality !== "object" || Array.isArray(reality)) {
-    errors.push(`${pathName} must be an object when stable is enabled`);
-    return;
-  }
-  requiredString(reality.target, `${pathName}.target`, errors);
-  requiredArray(reality.serverNames, `${pathName}.serverNames`, errors);
-  if (Array.isArray(reality.serverNames) && reality.serverNames.length === 0) {
-    errors.push(`${pathName}.serverNames must not be empty`);
-  }
-  if (requirePrivateKey) {
-    requiredString(reality.privateKey, `${pathName}.privateKey`, errors);
-  }
-  requiredString(reality.publicKey, `${pathName}.publicKey`, errors);
-  requiredArray(reality.shortIds, `${pathName}.shortIds`, errors);
-  if (Array.isArray(reality.shortIds) && reality.shortIds.length === 0) {
-    errors.push(`${pathName}.shortIds must not be empty`);
-  }
-  requiredString(reality.fingerprint, `${pathName}.fingerprint`, errors);
-  requiredString(reality.spiderX, `${pathName}.spiderX`, errors);
-}
-
-function validateCapability(capability, pathName, requirePortWhenEnabled, errors) {
-  if (!capability || typeof capability !== "object") {
-    errors.push(`${pathName} must be an object`);
-    return;
-  }
-  if (typeof capability.enabled !== "boolean") {
-    errors.push(`${pathName}.enabled must be boolean`);
-  }
-  if (capability.enabled && requirePortWhenEnabled && !isValidPort(capability.port)) {
-    errors.push(`${pathName}.port must be a valid TCP/UDP port when enabled`);
-  }
-  if (capability.port !== undefined && !isValidPort(capability.port)) {
-    errors.push(`${pathName}.port must be a valid port`);
-  }
-}
-
-function validatePortConflicts(node, errors) {
-  const used = new Map();
-  for (const key of ["stable", "native", "health", "subscription"]) {
-    const capability = node[key];
-    if (!capability?.enabled || capability.port === undefined) {
-      continue;
-    }
-    if (used.has(capability.port)) {
-      errors.push(`node ${node.id} has port conflict: ${key} and ${used.get(capability.port)} both use ${capability.port}`);
-    }
-    used.set(capability.port, key);
-  }
-}
-
-function isValidPort(value) {
-  return Number.isInteger(value) && value > 0 && value <= 65535;
-}
-
-function validateCountry(country, exitPools, errors) {
-  requiredString(country.name, `country ${country.code}.name`, errors);
-  if (typeof country.stableEnabled !== "boolean") {
-    errors.push(`country ${country.code}.stableEnabled must be boolean`);
-  }
-  if (typeof country.nativeEnabled !== "boolean") {
-    errors.push(`country ${country.code}.nativeEnabled must be boolean`);
-  }
-  if (!exitPools.has(country.exitPool)) {
-    errors.push(`country ${country.code} references missing exitPool ${country.exitPool}`);
-  }
-}
-
-function validateExitPool(pool, nodes, countries, errors) {
-  if (!countries.has(pool.country)) {
-    errors.push(`exitPool ${pool.id} references missing country ${pool.country}`);
-  }
-  const poolNodes = requiredArray(pool.nodes, `exitPool ${pool.id}.nodes`, errors);
-  for (const nodeId of poolNodes) {
-    const node = nodes.get(nodeId);
-    if (!node) {
-      errors.push(`exitPool ${pool.id} references missing node ${nodeId}`);
-      continue;
-    }
-    if (node.role !== "foreign-exit") {
-      errors.push(`exitPool ${pool.id} references non-exit node ${nodeId}`);
-    }
-    if (node.country !== pool.country) {
-      errors.push(`exitPool ${pool.id} node ${nodeId} country ${node.country} does not match pool country ${pool.country}`);
-    }
-  }
-}
-
 function validateTarget(target, platforms, errors) {
   if (!target || typeof target !== "object") {
     errors.push("targets entries must be objects");
@@ -572,158 +364,16 @@ function validateTarget(target, platforms, errors) {
   if (target.id !== undefined) {
     requiredString(target.id, "target.id", errors);
   }
-  if (target.role !== undefined && !allowedRoles.has(target.role)) {
+  if (!allowedRoles.has(target.role)) {
     errors.push(`target role ${target.role} is unsupported`);
   }
 
   if (!allowedKinds.has(target.kind)) {
-    errors.push(`target ${target.configFile ?? "<unknown>"} has unsupported kind ${target.kind}`);
+    errors.push(`target ${target.role ?? "<unknown>"} has unsupported kind ${target.kind}`);
   }
   if (!platforms.includes(target.platform)) {
-    errors.push(`target ${target.configFile ?? "<unknown>"} platform ${target.platform} is not listed in platforms`);
+    errors.push(`target ${target.role ?? "<unknown>"} platform ${target.platform} is not listed in platforms`);
   }
-  requiredString(target.configFile, "target.configFile", errors);
-}
-
-function validateClientAccess(clientAccess, nodes, countries, exitPools, bundleNode, errors) {
-  if (!clientAccess || typeof clientAccess !== "object" || Array.isArray(clientAccess)) {
-    errors.push("clientAccess must be an object");
-    return;
-  }
-
-  if (clientAccess.enabled !== true) {
-    errors.push("clientAccess.enabled must be true");
-  }
-
-  const profiles = requiredArray(clientAccess.profiles, "clientAccess.profiles", errors);
-  if (profiles.length === 0) {
-    errors.push("clientAccess.profiles must not be empty");
-  }
-  const needsSubscriptionFields = bundleNode.role === "rf-entry" && profiles.some((profile) => profile.entryNode === bundleNode.id);
-  if (needsSubscriptionFields) {
-    const user = requiredObject(clientAccess.user, "clientAccess.user", errors);
-    requiredString(user.id, "clientAccess.user.id", errors);
-    requiredString(user.plan, "clientAccess.user.plan", errors);
-    requiredString(user.subscriptionToken, "clientAccess.user.subscriptionToken", errors);
-
-    const reality = requiredObject(clientAccess.reality, "clientAccess.reality", errors);
-    requiredString(reality.sni, "clientAccess.reality.sni", errors);
-    requiredString(reality.fingerprint, "clientAccess.reality.fingerprint", errors);
-    requiredString(reality.publicKey, "clientAccess.reality.publicKey", errors);
-    requiredString(reality.shortId, "clientAccess.reality.shortId", errors);
-  }
-  validateClientAccessTransport(clientAccess.transport, errors);
-
-  const profileIds = new Set();
-  for (const profile of profiles) {
-    validateClientAccessProfile(profile, nodes, countries, exitPools, bundleNode, profileIds, errors);
-  }
-
-}
-
-function validateClientAccessProfile(profile, nodes, countries, exitPools, bundleNode, profileIds, errors) {
-  if (!profile || typeof profile !== "object") {
-    errors.push("clientAccess.profiles entries must be objects");
-    return;
-  }
-
-  requiredString(profile.id, "clientAccess.profile.id", errors);
-  if (profileIds.has(profile.id)) {
-    errors.push(`clientAccess.profiles has duplicate id: ${profile.id}`);
-  }
-  profileIds.add(profile.id);
-
-  requiredString(profile.name, `clientAccess.profile ${profile.id}.name`, errors);
-  if (!allowedModes.has(profile.mode)) {
-    errors.push(`clientAccess.profile ${profile.id} has unsupported mode ${profile.mode}`);
-  }
-  if (!countries.has(profile.country)) {
-    errors.push(`clientAccess.profile ${profile.id} references missing country ${profile.country}`);
-  }
-  const entryNode = nodes.get(profile.entryNode);
-  if (!entryNode && profile.entryNode === bundleNode.id) {
-    errors.push(`clientAccess.profile ${profile.id} references missing entryNode ${profile.entryNode}`);
-  } else if (entryNode && entryNode.role !== "rf-entry") {
-    errors.push(`clientAccess.profile ${profile.id} entryNode ${profile.entryNode} is not rf-entry`);
-  }
-  const exitPool = exitPools.get(profile.exitPool);
-  if (!exitPool) {
-    errors.push(`clientAccess.profile ${profile.id} references missing exitPool ${profile.exitPool}`);
-  } else if (exitPool.country !== profile.country) {
-    errors.push(`clientAccess.profile ${profile.id} country ${profile.country} does not match exitPool ${profile.exitPool} country ${exitPool.country}`);
-  }
-  const country = countries.get(profile.country);
-  if (profile.mode === "stable" && country && !country.stableEnabled) {
-    errors.push(`clientAccess.profile ${profile.id} uses stable mode but country ${profile.country} has stableEnabled=false`);
-  }
-  if (profile.mode === "native" && country && !country.nativeEnabled) {
-    errors.push(`clientAccess.profile ${profile.id} uses native mode but country ${profile.country} has nativeEnabled=false`);
-  }
-  if (profile.mode === "stable" && entryNode && !entryNode.stable?.enabled) {
-    errors.push(`clientAccess.profile ${profile.id} uses stable mode but entryNode ${profile.entryNode} has stable.enabled=false`);
-  }
-  if (profile.mode === "native" && entryNode && !entryNode.native?.enabled) {
-    errors.push(`clientAccess.profile ${profile.id} uses native mode but entryNode ${profile.entryNode} has native.enabled=false`);
-  }
-  if (profile.mode === "stable" && exitPool && !exitPool.nodes.some((nodeId) => nodes.get(nodeId)?.stable?.enabled)) {
-    errors.push(`clientAccess.profile ${profile.id} uses stable mode but exitPool ${profile.exitPool} has no stable-enabled exit node`);
-  }
-  if (profile.exitNode !== undefined) {
-    requiredString(profile.exitNode, `clientAccess.profile ${profile.id}.exitNode`, errors);
-    const exitNode = nodes.get(profile.exitNode);
-    if (!exitNode) {
-      errors.push(`clientAccess.profile ${profile.id} references missing exitNode ${profile.exitNode}`);
-    } else if (exitNode.role !== "foreign-exit") {
-      errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not foreign-exit`);
-    } else if (!exitNode.stable?.enabled) {
-      errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} has stable.enabled=false`);
-    } else if (exitPool && !exitPool.nodes.includes(profile.exitNode)) {
-      errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not part of exitPool ${profile.exitPool}`);
-    }
-  }
-  if (profile.mode === "native" && exitPool && !exitPool.nodes.some((nodeId) => nodes.get(nodeId)?.native?.enabled)) {
-    errors.push(`clientAccess.profile ${profile.id} uses native mode but exitPool ${profile.exitPool} has no native-enabled exit node`);
-  }
-  if (profile.mode === "stable" && !isUuid(profile.uuid)) {
-    errors.push(`clientAccess.profile ${profile.id}.uuid must be a UUID for stable mode`);
-  }
-}
-
-function validateClientAccessTransport(transport, errors) {
-  if (transport === undefined) {
-    return;
-  }
-  if (!transport || typeof transport !== "object" || Array.isArray(transport)) {
-    errors.push("clientAccess.transport must be an object");
-    return;
-  }
-  validateFlow(transport.clientFlow, "clientAccess.transport.clientFlow", errors);
-  validateFlow(transport.exitFlow, "clientAccess.transport.exitFlow", errors);
-  if (transport.exitMux !== undefined) {
-    if (!transport.exitMux || typeof transport.exitMux !== "object" || Array.isArray(transport.exitMux)) {
-      errors.push("clientAccess.transport.exitMux must be an object");
-    } else {
-      if (typeof transport.exitMux.enabled !== "boolean") {
-        errors.push("clientAccess.transport.exitMux.enabled must be boolean");
-      }
-      if (transport.exitMux.concurrency !== undefined && (!Number.isInteger(transport.exitMux.concurrency) || transport.exitMux.concurrency < 1 || transport.exitMux.concurrency > 1024)) {
-        errors.push("clientAccess.transport.exitMux.concurrency must be an integer between 1 and 1024");
-      }
-    }
-  }
-}
-
-function validateFlow(value, pathName, errors) {
-  if (value === undefined) {
-    return;
-  }
-  if (!["none", "xtls-rprx-vision"].includes(value)) {
-    errors.push(`${pathName} must be one of: none, xtls-rprx-vision`);
-  }
-}
-
-function isUuid(value) {
-  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 async function renderBundle(plan, target, bundleDir, options) {
@@ -731,18 +381,16 @@ async function renderBundle(plan, target, bundleDir, options) {
   await mkdir(path.join(bundleDir, "manage"), { recursive: true });
 
   const bundle = renderBundleMetadata(plan, target);
-  const subscription = renderSubscriptionConfig(target);
 
   await writeJson(path.join(bundleDir, "bundle.json"), bundle);
   await writeFile(path.join(bundleDir, "docker-compose.yml"), renderCompose(plan, target), "utf8");
   await renderRuntimeConfigExample(target, bundleDir);
-  await writeFile(path.join(bundleDir, "README.md"), renderBundleReadme(plan, target, subscription), "utf8");
+  await writeFile(path.join(bundleDir, "README.md"), renderBundleReadme(plan, target), "utf8");
 
   const manageTemplatePath = path.join(repoRoot, "templates", "manage.sh.template");
   const manageTemplate = await readFile(manageTemplatePath, "utf8");
   const manage = manageTemplate
     .replaceAll("__APP_NAME__", plan.project.name)
-    .replaceAll("__NODE_ID__", target.node.id)
     .replaceAll("__NODE_ROLE__", target.role)
     .replaceAll("__MANAGE_IMAGE__", plan.images.node);
   const managePath = path.join(bundleDir, "manage.sh");
@@ -760,18 +408,13 @@ async function renderBundle(plan, target, bundleDir, options) {
 
 function renderBundleMetadata(plan, target) {
   return {
-    project: target.runtime.project.name,
+    project: plan.project.name,
     bundleVersion: plan.bundleVersion,
     bundleKind: "node",
     targetId: target.id,
-    nodeId: target.node.id,
     nodeRole: target.role,
     targetPlatform: target.platform,
     createdAt: plan.createdAt,
-    clientAccess: {
-      enabled: target.runtime.clientAccess.enabled,
-      bootstrapUserId: target.runtime.clientAccess.enabled && target.runtime.clientAccess.user ? target.runtime.clientAccess.user.id : null,
-    },
     images: getRuntimeImages(plan, target).map((image) => ({
       name: image,
       file: `images/${imageFileName(image)}`,
@@ -780,7 +423,9 @@ function renderBundleMetadata(plan, target) {
 }
 
 async function renderRuntimeConfigExample(target, bundleDir) {
-  await writeFile(path.join(bundleDir, "example.config.jsonc"), renderRuntimeConfigExampleSource(target.runtimeSource), "utf8");
+  const examplePath = path.join(repoRoot, "config", "examples", target.role === "rf-entry" ? "rf-entry.config.jsonc" : "foreign-exit.config.jsonc");
+  const source = await readFile(examplePath, "utf8");
+  await writeFile(path.join(bundleDir, "example.config.jsonc"), renderRuntimeConfigExampleSource(source), "utf8");
 }
 
 function renderRuntimeConfigExampleSource(source) {
@@ -794,43 +439,20 @@ function renderRuntimeConfigExampleSource(source) {
   ].join("\n");
 }
 
-function renderSubscriptionConfig(target) {
-  const runtime = target.runtime;
-  if (!runtime.clientAccess.enabled || target.role !== "rf-entry" || !runtime.clientAccess.user) {
-    return {
-      enabled: false,
-      reason: target.role === "rf-entry" ? "clientAccess profiles disabled" : "subscription output is emitted by rf-entry bundles",
-    };
-  }
-
-  const token = runtime.clientAccess.user.subscriptionToken;
-  const subscriptionUrl = `${runtime.project.subscriptionBaseUrl.replace(/\/$/, "")}/sub/${encodeURIComponent(token)}`;
-
-  return {
-    enabled: true,
-    user: {
-      id: runtime.clientAccess.user.id,
-      plan: runtime.clientAccess.user.plan,
-    },
-    token,
-    subscriptionUrl,
-  };
-}
-
 function renderCompose(plan, target) {
-  const project = target.runtime.project;
+  const project = plan.project;
   const lines = [
-    `name: ${yamlString(`${project.name}-${target.node.id}`)}`,
+    `name: ${yamlString(`${project.name}-${target.role}`)}`,
     "services:",
   ];
 
-  if (target.role === "rf-entry" && target.node.subscription?.enabled) {
+  if (target.role === "rf-entry") {
     lines.push(...renderRfEdgeComposeServices(plan, target, project));
   }
 
   lines.push(...renderXrayComposeService(plan, target, project));
 
-  if (target.role === "rf-entry" && target.node.subscription?.enabled) {
+  if (target.role === "rf-entry") {
     lines.push(
       "  subscription:",
       `    image: ${yamlString(plan.images.busybox)}`,
@@ -838,22 +460,21 @@ function renderCompose(plan, target) {
       `      - ${yamlString("httpd")}`,
       `      - ${yamlString("-f")}`,
       `      - ${yamlString("-p")}`,
-      `      - ${yamlString(String(target.node.subscription.port))}`,
+      `      - ${yamlString("8081")}`,
       `      - ${yamlString("-h")}`,
       `      - ${yamlString("/www")}`,
       "    restart: unless-stopped",
       "    volumes:",
       `      - ${yamlString("./public:/www:ro")}`,
-      "    expose:",
-      `      - ${yamlString(String(target.node.subscription.port))}`,
-      "    labels:",
+    "    expose:",
+      `      - ${yamlString("8081")}`,
+    "    labels:",
       `      two-hop-vpn.project: ${yamlString(project.name)}`,
-      `      two-hop-vpn.node-id: ${yamlString(target.node.id)}`,
       `      two-hop-vpn.node-role: ${yamlString(target.role)}`,
     );
   }
 
-  if (target.role === "rf-entry" && target.node.subscription?.enabled) {
+  if (target.role === "rf-entry") {
     lines.push(
       "volumes:",
       "  caddy_data:",
@@ -884,7 +505,6 @@ function renderRfEdgeComposeServices(plan, target, project) {
     `      - ${yamlString(`${edgePorts.tls}:${edgePorts.tls}/tcp`)}`,
     "    labels:",
     `      two-hop-vpn.project: ${yamlString(project.name)}`,
-    `      two-hop-vpn.node-id: ${yamlString(target.node.id)}`,
     `      two-hop-vpn.node-role: ${yamlString(target.role)}`,
     "      two-hop-vpn.edge: \"true\"",
     "  caddy:",
@@ -901,7 +521,6 @@ function renderRfEdgeComposeServices(plan, target, project) {
     `      - ${yamlString(String(edgePorts.caddyHttps))}`,
     "    labels:",
     `      two-hop-vpn.project: ${yamlString(project.name)}`,
-    `      two-hop-vpn.node-id: ${yamlString(target.node.id)}`,
     `      two-hop-vpn.node-role: ${yamlString(target.role)}`,
   ];
 }
@@ -920,16 +539,15 @@ function renderXrayComposeService(plan, target, project) {
     `      - ${yamlString("./logs:/bundle/logs")}`,
   ];
 
-  if (target.role === "rf-entry" && target.node.subscription?.enabled) {
+  if (target.role === "rf-entry") {
     lines.push("    expose:", `      - ${yamlString(String(edgePorts.xrayStableBackend))}`);
   } else {
-    lines.push("    ports:", `      - ${yamlString(`${target.node.stable.port}:${target.node.stable.port}/tcp`)}`);
+    lines.push("    ports:", `      - ${yamlString("443:443/tcp")}`);
   }
 
   lines.push(
     "    labels:",
     `      two-hop-vpn.project: ${yamlString(project.name)}`,
-    `      two-hop-vpn.node-id: ${yamlString(target.node.id)}`,
     `      two-hop-vpn.node-role: ${yamlString(target.role)}`,
   );
 
@@ -942,7 +560,7 @@ function yamlString(value) {
 
 function getRuntimeImages(plan, target) {
   const images = [plan.images.node, plan.images.xray];
-  if (target.role === "rf-entry" && target.node.subscription?.enabled) {
+  if (target.role === "rf-entry") {
     images.push(plan.images.haproxy, plan.images.caddy, plan.images.busybox);
   }
   return Array.from(new Set(images));
@@ -971,12 +589,11 @@ function runCommand(command, args, label) {
   }
 }
 
-function renderBundleReadme(plan, target, subscription) {
-  const project = target.runtime.project;
+function renderBundleReadme(plan, target) {
+  const project = plan.project;
   const lines = [
-    `# ${project.name} ${target.node.id} bundle`,
+    `# ${project.name} ${target.role} bundle`,
     "",
-    `Node: ${target.node.id}`,
     `Role: ${target.role}`,
     `Target: ${target.id}`,
     `Platform: ${target.platform}`,
@@ -995,8 +612,8 @@ function renderBundleReadme(plan, target, subscription) {
     "",
     "## Runtime config",
     "",
-    "- `example.config.jsonc` is the bundled runtime config example.",
-    "- Copy it to `runtime.jsonc`, then replace placeholders for the live VPS pair.",
+    "- `example.config.jsonc` is a generic runtime config example for this role.",
+    "- Copy it to `runtime.jsonc`, then replace placeholders for the live VPS.",
     "- `config/runtime.generated.json`, `config/routing.generated.json`, and `config/xray.generated.json` are generated by `./manage.sh generate-config`.",
     "",
     "To regenerate runtime artifacts after editing the runtime JSONC:",
@@ -1017,25 +634,28 @@ function renderBundleReadme(plan, target, subscription) {
     "```",
   ];
 
-  if (subscription.enabled) {
-    const subscriptionHost = new URL(target.runtime.project.subscriptionBaseUrl).hostname;
+  if (target.role === "rf-entry") {
     lines.push(
       "",
       "## Client access subscription",
       "",
-      `Public URL configured in metadata: ${subscription.subscriptionUrl}`,
+      "The public subscription URL is generated from `project.subscriptionBaseUrl` and `clientAccess.user.subscriptionToken` in `runtime.jsonc`:",
+      "",
+      "```text",
+      "<project.subscriptionBaseUrl>/sub/<clientAccess.user.subscriptionToken>",
+      "```",
       "",
       "RF Entry publishes only 80/tcp and 443/tcp. Point both DNS records to this RF VPS IP:",
       "",
       "```text",
-      `${target.node.host} -> RF VPS IP`,
-      `${subscriptionHost} -> RF VPS IP`,
+      "<runtime node.host> -> RF VPS IP",
+      "<subscription hostname> -> RF VPS IP",
       "```",
       "",
       "Local file inside this bundle:",
       "",
       "```text",
-      `public/sub/${subscription.token}`,
+      "public/sub/<subscriptionToken>",
       "```",
     );
   }

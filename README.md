@@ -21,8 +21,8 @@ This project is for operators who want a reproducible, inspectable deployment in
 
 ## Terminology
 
-- `Build config`: `config/examples/build.example.jsonc`. It tells the builder which node bundles to create and which Docker images they use.
-- `Bundle`: a portable `vpn-bundle/` directory or `.tar.gz` archive for one node. It contains `docker-compose.yml`, `manage.sh`, metadata, templates, and an editable runtime config example.
+- `Build config`: `config/examples/build.example.jsonc`. It tells the builder which role bundles to create and which Docker images they use.
+- `Bundle`: a portable `vpn-bundle/` directory or `.tar.gz` archive for one role, either RF Entry or Foreign Exit. It contains `docker-compose.yml`, `manage.sh`, metadata, templates, and an editable runtime config example. The same Foreign Exit bundle can be reused on multiple VPS hosts with different `runtime.jsonc` files.
 - `Client`: the user's VPN app. The examples are designed around clients that can import VLESS Reality subscription links.
 - `clientAccess`: the required manual client access block in `runtime.jsonc`. It defines the subscription token, client-facing Reality parameters, inter-node transport settings, and profile UUIDs used by generated Xray configs.
 - `Docker-only bundle`: a bundle built with `--save-images`, so the VPS can load images from `images/*.tar` instead of pulling them from registries.
@@ -42,11 +42,11 @@ This project is for operators who want a reproducible, inspectable deployment in
 
 The client connects only to the RF Entry node. The RF Entry node accepts the public VLESS Reality connection, routes the selected profile to a Foreign Exit node, and the Foreign Exit node sends traffic to the internet. This keeps the user-facing endpoint stable while the exit side can live in another country.
 
-The repository builds portable `vpn-bundle` archives for both node roles. A bundle contains Docker Compose configuration, node metadata, a POSIX `manage.sh` helper, a bundled Node.js management helper, and an editable runtime configuration example. The VPS does not need Node.js, npm, git, or the source repository.
+The repository builds portable `vpn-bundle` archives for both node roles. A bundle contains Docker Compose configuration, role metadata, a POSIX `manage.sh` helper, a bundled Node.js management helper, and an editable runtime configuration example. The concrete node identity comes from `runtime.jsonc`, not from the bundle. The VPS does not need Node.js, npm, git, or the source repository.
 
 ## What This Repository Provides
 
-- RF Entry and Foreign Exit node bundle generation.
+- RF Entry and Foreign Exit role bundle generation.
 - A simple one-entry deployment model with one or more manually declared Foreign Exit profiles.
 - VLESS Reality TCP/443 stable transport through Xray-core.
 - A generated subscription file served from the RF Entry node.
@@ -166,7 +166,7 @@ For production use, a domain you control is preferable. Free dynamic DNS service
 
 ## Prepare Runtime Configs
 
-Each bundle includes `example.config.jsonc`. On the target VPS, copy it to `runtime.jsonc` and edit it before starting services:
+Each role bundle includes a generic `example.config.jsonc`. On the target VPS, copy it to `runtime.jsonc` and edit it before starting services. The bundle only enforces the role: an RF Entry bundle requires `runtime.node.role = "rf-entry"`, and a Foreign Exit bundle requires `runtime.node.role = "foreign-exit"`.
 
 ```sh
 cp example.config.jsonc runtime.jsonc

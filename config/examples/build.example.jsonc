@@ -5,6 +5,10 @@
     "createdAt": "2026-06-12T00:00:00.000Z"
   },
 
+  "project": {
+    "name": "two-hop-vpn"
+  },
+
   // Runtime image names used by generated Docker Compose files and manage helpers.
   // Use exact tags for production deployments.
   "images": {
@@ -32,18 +36,14 @@
       // Role plus platform derive the archive/stage target id:
       // rf-entry-linux-amd64.
       "role": "rf-entry",
-      "platform": "linux/amd64",
-      // This node-specific config is copied into the bundle as example.config.jsonc.
-      "configFile": "config/examples/rf-entry.config.jsonc"
+      "platform": "linux/amd64"
     },
     {
       "kind": "node",
       // Role plus platform derive the archive/stage target id:
       // foreign-exit-linux-amd64.
       "role": "foreign-exit",
-      "platform": "linux/amd64",
-      // This node-specific config is copied into the bundle as example.config.jsonc.
-      "configFile": "config/examples/foreign-exit.config.jsonc"
+      "platform": "linux/amd64"
     }
   ]
 }

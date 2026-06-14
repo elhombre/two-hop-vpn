@@ -105,13 +105,16 @@ async function loadContext(args) {
   const runtimePath = resolveBundlePath(args.configFile);
   const runtimeInput = await readJsonc(runtimePath);
   const normalizedRuntime = normalizeRuntime(runtimeInput.value);
-  const errors = validateRuntime(normalizedRuntime, bundle);
+  const runtimeNode = runtimeInput.value?.node;
+  const node = runtimeNode?.id ? normalizedRuntime.nodes.find((candidate) => candidate.id === runtimeNode.id) : undefined;
+  const errors = validateRuntime(normalizedRuntime, bundle, node);
 
-  const node = normalizedRuntime.nodes.find((candidate) => candidate.id === bundle.nodeId);
   if (!node) {
-    errors.push(`runtime config does not contain bundle node ${bundle.nodeId}`);
+    errors.push("runtime config must contain a local node object with a string id");
   } else if (node.role !== bundle.nodeRole) {
     errors.push(`runtime node ${node.id} role ${node.role} does not match bundle role ${bundle.nodeRole}`);
+  } else {
+    validateBundleRoleRuntime(node, errors);
   }
 
   if (errors.length > 0) {
@@ -139,6 +142,15 @@ function normalizeRuntime(runtime) {
     exitPools: runtime.exitPools ?? [],
     clientAccess: runtime.clientAccess,
   };
+}
+
+function validateBundleRoleRuntime(node, errors) {
+  if (node.role === "rf-entry" && !node.subscription?.enabled) {
+    errors.push("rf-entry bundle requires node.subscription.enabled=true");
+  }
+  if (node.role === "foreign-exit" && node.stable?.port !== 443) {
+    errors.push("foreign-exit bundle requires node.stable.port=443");
+  }
 }
 
 async function generateConfig(context, args) {
@@ -349,7 +361,7 @@ function stripTrailingCommas(source) {
   return source.replace(/,\s*([}\]])/g, "$1");
 }
 
-function validateRuntime(runtime, bundle) {
+function validateRuntime(runtime, bundle, localNode) {
   const errors = [];
   const project = requiredObject(runtime.project, "project", errors);
   requiredString(project.name, "project.name", errors);
@@ -360,7 +372,7 @@ function validateRuntime(runtime, bundle) {
   const exitPools = mapById(requiredArray(runtime.exitPools, "exitPools", errors), "exitPools", errors);
 
   for (const node of nodes.values()) {
-    validateNode(node, node.id === bundle.nodeId, errors);
+    validateNode(node, node.id === localNode?.id, errors);
   }
   for (const country of countries.values()) {
     validateCountry(country, exitPools, errors);
@@ -368,8 +380,8 @@ function validateRuntime(runtime, bundle) {
   for (const pool of exitPools.values()) {
     validateExitPool(pool, nodes, countries, errors);
   }
-  validateClientAccess(runtime.clientAccess, nodes, countries, exitPools, bundle, errors);
-  validateEdge(runtime, bundle, errors);
+  validateClientAccess(runtime.clientAccess, nodes, countries, exitPools, localNode, errors);
+  validateEdge(runtime, localNode, errors);
 
   return errors;
 }
@@ -490,7 +502,7 @@ function validateExitPool(pool, nodes, countries, errors) {
   }
 }
 
-function validateClientAccess(clientAccess, nodes, countries, exitPools, bundle, errors) {
+function validateClientAccess(clientAccess, nodes, countries, exitPools, localNode, errors) {
   if (!clientAccess || typeof clientAccess !== "object" || Array.isArray(clientAccess)) {
     errors.push("clientAccess must be an object");
     return;
@@ -502,7 +514,7 @@ function validateClientAccess(clientAccess, nodes, countries, exitPools, bundle,
   if (profiles.length === 0) {
     errors.push("clientAccess.profiles must not be empty");
   }
-  const needsSubscriptionFields = bundle.nodeRole === "rf-entry" && profiles.some((profile) => profile.entryNode === bundle.nodeId);
+  const needsSubscriptionFields = localNode?.role === "rf-entry" && profiles.some((profile) => profile.entryNode === localNode.id);
 
   if (needsSubscriptionFields) {
     const user = requiredObject(clientAccess.user, "clientAccess.user", errors);
@@ -521,7 +533,7 @@ function validateClientAccess(clientAccess, nodes, countries, exitPools, bundle,
       continue;
     }
     requiredString(profile.id, "clientAccess.profile.id", errors);
-    if (profile.entryNode === bundle.nodeId && !nodes.has(profile.entryNode)) {
+    if (profile.entryNode === localNode?.id && !nodes.has(profile.entryNode)) {
       errors.push(`clientAccess.profile ${profile.id} references missing entryNode ${profile.entryNode}`);
     }
     if (!countries.has(profile.country)) {
@@ -586,9 +598,8 @@ function isUuid(value) {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function validateEdge(runtime, bundle, errors) {
-  const node = runtime.nodes.find((candidate) => candidate.id === bundle.nodeId);
-  if (!node || node.role !== "rf-entry" || !node.subscription?.enabled) {
+function validateEdge(runtime, localNode, errors) {
+  if (!localNode || localNode.role !== "rf-entry" || !localNode.subscription?.enabled) {
     return;
   }
 
@@ -603,7 +614,7 @@ function validateEdge(runtime, bundle, errors) {
   if (subscriptionUrl.port) {
     errors.push("project.subscriptionBaseUrl must not include a port when RF edge is enabled");
   }
-  if (subscriptionUrl.hostname === node.host) {
+  if (subscriptionUrl.hostname === localNode.host) {
     errors.push("project.subscriptionBaseUrl hostname must differ from node.host so HAProxy can route subscription and Reality by SNI");
   }
 }

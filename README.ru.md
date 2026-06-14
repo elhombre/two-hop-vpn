@@ -21,8 +21,8 @@ Runtime config намеренно чуть более структурирова
 
 ## Терминология
 
-- `Build config`: `config/examples/build.example.jsonc`. Он описывает, какие node bundle-ы собрать и какие Docker images использовать.
-- `Bundle`: переносимый каталог `vpn-bundle/` или `.tar.gz` archive для одной ноды. Внутри есть `docker-compose.yml`, `manage.sh`, metadata, templates и редактируемый пример runtime config.
+- `Build config`: `config/examples/build.example.jsonc`. Он описывает, какие role bundle-ы собрать и какие Docker images использовать.
+- `Bundle`: переносимый каталог `vpn-bundle/` или `.tar.gz` archive для одной роли: RF Entry или Foreign Exit. Внутри есть `docker-compose.yml`, `manage.sh`, metadata, templates и редактируемый пример runtime config. Один и тот же Foreign Exit bundle можно использовать на нескольких VPS с разными `runtime.jsonc`.
 - `Client`: VPN-приложение пользователя. Примеры рассчитаны на клиенты, которые умеют импортировать VLESS Reality subscription links.
 - `clientAccess`: обязательная секция ручного клиентского доступа в `runtime.jsonc`. Она задаёт subscription token, client-facing Reality параметры, inter-node transport settings и profile UUIDs, которые используются generated Xray configs.
 - `Docker-only bundle`: bundle, собранный с `--save-images`, чтобы VPS могла загрузить images из `images/*.tar` без pull из registry.
@@ -42,11 +42,11 @@ Runtime config намеренно чуть более структурирова
 
 Клиент подключается только к RF Entry. RF Entry принимает публичное VLESS Reality-подключение, маршрутизирует выбранный профиль на Foreign Exit, а Foreign Exit выпускает трафик в интернет. Так пользовательский входной endpoint остаётся стабильным, а выходной сервер может находиться в другой стране.
 
-Репозиторий собирает переносимые архивы `vpn-bundle` для обеих ролей. Bundle содержит Docker Compose конфигурацию, metadata ноды, POSIX-совместимый `manage.sh`, Node.js helper внутри контейнера и редактируемый пример runtime-конфига. На VPS не нужны Node.js, npm, git или исходники репозитория.
+Репозиторий собирает переносимые архивы `vpn-bundle` для обеих ролей. Bundle содержит Docker Compose конфигурацию, role metadata, POSIX-совместимый `manage.sh`, Node.js helper внутри контейнера и редактируемый пример runtime-конфига. Конкретная node identity берётся из `runtime.jsonc`, а не из bundle. На VPS не нужны Node.js, npm, git или исходники репозитория.
 
 ## Что есть в репозитории
 
-- Сборка bundle-ов для RF Entry и Foreign Exit.
+- Сборка role bundle-ов для RF Entry и Foreign Exit.
 - Простая модель deployment: один RF Entry и один или несколько вручную описанных Foreign Exit profiles.
 - Stable-транспорт VLESS Reality TCP/443 через Xray-core.
 - Генерация subscription-файла, который публикуется на RF Entry.
@@ -166,7 +166,7 @@ exit-2-example.duckdns.org -> IP опциональной второй Foreign E
 
 ## Runtime config
 
-Каждый bundle содержит `example.config.jsonc`. На целевой VPS скопируйте его в `runtime.jsonc` и отредактируйте перед запуском:
+Каждый role bundle содержит generic `example.config.jsonc`. На целевой VPS скопируйте его в `runtime.jsonc` и отредактируйте перед запуском. Bundle проверяет только роль: RF Entry bundle требует `runtime.node.role = "rf-entry"`, а Foreign Exit bundle требует `runtime.node.role = "foreign-exit"`.
 
 ```sh
 cp example.config.jsonc runtime.jsonc
