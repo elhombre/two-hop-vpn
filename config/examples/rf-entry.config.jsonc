@@ -14,7 +14,7 @@
   "project": {
     "name": "two-hop-vpn",
     // Public HTTPS base URL that the client imports:
-    // https://sub.example.com/sub/<subscriptionToken>
+    // https://sub.example.com/sub/<clientAccess.users[].subscriptionToken>
     "subscriptionBaseUrl": "https://sub.example.com"
   },
 
@@ -160,7 +160,7 @@
   "exitPools": [
     {
       // Exit pool ids are local runtime identifiers. Profiles reference them
-      // through clientAccess.profiles[].exitPool.
+      // through clientAccess.exitProfiles[].exitPool.
       "id": "exit-pool-de",
       "country": "DE",
       "nodes": [
@@ -175,14 +175,6 @@
   // Client -> RF Entry -> Foreign Exit -> Internet.
   // Replace token, UUID, domains, and Reality keys before using it publicly.
   "clientAccess": {
-    "enabled": true,
-    "user": {
-      "id": "manual-user",
-      "plan": "manual",
-      // Random secret URL token for the client subscription.
-      // Generate one with: openssl rand -hex 24
-      "subscriptionToken": "manual-token-change-me"
-    },
     "reality": {
       // SNI used in the client share link. Keep it compatible with RF
       // node.reality.serverNames and target.
@@ -205,21 +197,20 @@
         "concurrency": 8
       }
     },
-    "profiles": [
+    "exitProfiles": [
       {
-        "id": "manual-user-de-foreign-1",
+        "id": "de-foreign-1",
         "name": "Germany - Foreign 1",
         "country": "DE",
         "mode": "stable",
         "entryNode": "rf-1",
         "exitPool": "exit-pool-de",
         "exitNode": "foreign-1",
-        // Stable VLESS user UUID. Generate one with:
-        // docker run --rm node:22-alpine node -e "console.log(crypto.randomUUID())"
+        // Shared intermediate RF -> Foreign VLESS user UUID.
         "uuid": "00000000-0000-4000-8000-000000000001"
       },
       {
-        "id": "manual-user-de-foreign-2",
+        "id": "de-foreign-2",
         "name": "Germany - Foreign 2",
         "country": "DE",
         "mode": "stable",
@@ -227,6 +218,33 @@
         "exitPool": "exit-pool-de",
         "exitNode": "foreign-2",
         "uuid": "00000000-0000-4000-8000-000000000002"
+      }
+    ],
+    "users": [
+      {
+        "id": "manual-user",
+        "enabled": true,
+        "plan": "manual",
+        // Random secret URL token for this user's client subscription.
+        // Generate one with: openssl rand -hex 24
+        "subscriptionToken": "manual-token-change-me",
+        "profileRefs": [
+          {
+            "profile": "de-foreign-1",
+            // Client -> RF Entry VLESS user UUID. Generate one with:
+            // docker run --rm node:22-alpine node -e "console.log(crypto.randomUUID())"
+            "uuid": "00000000-0000-4000-8000-000000000101"
+          },
+          {
+            "profile": "de-foreign-2",
+            "uuid": "00000000-0000-4000-8000-000000000102"
+          }
+        ]
+      },
+      {
+        "id": "manual-user-disabled",
+        "enabled": false,
+        "profileRefs": []
       }
     ]
   }

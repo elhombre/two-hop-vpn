@@ -31,7 +31,7 @@ This means the same `foreign-exit` bundle can be copied to multiple VPS hosts. E
 - `peers`: remote Foreign Exit nodes known by an RF Entry.
 - `countries`: country-level routing model.
 - `exitPools`: groups of Foreign Exit nodes by country.
-- `clientAccess`: subscription user, client-facing Reality settings, transport settings, and profiles.
+- `clientAccess`: manually declared users, per-user subscription tokens, client-facing Reality settings, transport settings, and profiles.
 
 During `./manage.sh validate` and `./manage.sh generate-config`, the manage helper checks that `runtime.node.role` matches the bundle role. It does not require a specific `runtime.node.id`.
 
@@ -50,18 +50,18 @@ During `./manage.sh validate` and `./manage.sh generate-config`, the manage help
 The RF Entry bundle also writes the public subscription file under:
 
 ```text
-public/sub/<subscriptionToken>
+public/sub/<clientAccess.users[].subscriptionToken>
 ```
 
 Clients should import the HTTPS URL:
 
 ```text
-<project.subscriptionBaseUrl>/sub/<clientAccess.user.subscriptionToken>
+<project.subscriptionBaseUrl>/sub/<clientAccess.users[].subscriptionToken>
 ```
 
 ## Profile Routing
 
-Each `clientAccess.profiles[]` entry represents one client-visible profile in the subscription.
+Each `clientAccess.exitProfiles[]` entry represents one shared output profile. Each `clientAccess.users[].profileRefs[]` entry attaches one of those shared profiles to one entry user and gives that user a separate Client -> RF Entry UUID.
 
 For a stable profile, the important fields are:
 
@@ -72,7 +72,9 @@ For a stable profile, the important fields are:
 - `entryNode`: RF Entry node id.
 - `exitPool`: exit pool id.
 - `exitNode`: optional concrete Foreign Exit node id.
-- `uuid`: VLESS user UUID.
+- `uuid`: shared intermediate RF -> Foreign VLESS user UUID.
+
+Each user has its own `enabled` flag and `subscriptionToken`. Disabled users are ignored by generated RF client configs and do not produce subscription files. `profileRefs[].uuid` values must be unique because they authenticate client entry connections.
 
 When `exitNode` is set, the profile is pinned to one concrete Foreign Exit node. This is the recommended public manual model because it makes each exit appear as a separate client profile. The client can then switch exits manually.
 
@@ -80,22 +82,39 @@ Example:
 
 ```jsonc
 {
-  "id": "manual-user-us-google",
-  "name": "USA - Google",
-  "country": "US",
-  "mode": "stable",
-  "entryNode": "rf-1",
-  "exitPool": "exit-pool-us",
-  "exitNode": "foreign-us-google",
-  "uuid": "31e03920-2078-49b9-b56f-c5cda128ccfa"
+  "exitProfiles": [
+    {
+      "id": "us-google",
+      "name": "USA - Google",
+      "country": "US",
+      "mode": "stable",
+      "entryNode": "rf-1",
+      "exitPool": "exit-pool-us",
+      "exitNode": "foreign-us-google",
+      "uuid": "31e03920-2078-49b9-b56f-c5cda128ccfa"
+    }
+  ],
+  "users": [
+    {
+      "id": "first-user",
+      "enabled": true,
+      "subscriptionToken": "first-token-change-me",
+      "profileRefs": [
+        {
+          "profile": "us-google",
+          "uuid": "970c54c5-d109-4379-bf82-c934d4703ee0"
+        }
+      ]
+    }
+  ]
 }
 ```
 
 The RF Entry generated Xray config creates:
 
-- One inbound client for each profile assigned to the local RF Entry.
-- One outbound to the selected Foreign Exit for each stable profile.
-- One routing rule mapping the authenticated profile email to the outbound tag.
+- One inbound client for each enabled user's profile ref assigned to the local RF Entry.
+- One deduplicated outbound to the selected Foreign Exit for each shared stable exit profile.
+- One routing rule mapping the authenticated entry user/profile email to the outbound tag.
 
 The Foreign Exit generated Xray config creates:
 
@@ -138,10 +157,10 @@ Because HAProxy uses SNI routing, `project.subscriptionBaseUrl` hostname must di
 Foreign Exit is intentionally simple:
 
 - It accepts RF Entry traffic over VLESS Reality.
-- It authenticates the profile UUID.
+- It authenticates the shared exit profile UUID.
 - It sends traffic directly to the internet.
 
-Foreign Exit does not serve subscriptions and does not need `clientAccess.user.subscriptionToken` or `clientAccess.reality`.
+Foreign Exit does not serve subscriptions and does not need `clientAccess.users[]`, `clientAccess.users[].subscriptionToken`, or `clientAccess.reality`.
 
 ## Current Boundaries
 

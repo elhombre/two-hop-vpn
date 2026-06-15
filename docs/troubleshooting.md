@@ -28,7 +28,7 @@ The minimum startup sequence after preparing `runtime.jsonc` is:
 The client should usually import the subscription URL, not a local file path:
 
 ```text
-<project.subscriptionBaseUrl>/sub/<clientAccess.user.subscriptionToken>
+<project.subscriptionBaseUrl>/sub/<clientAccess.users[].subscriptionToken>
 ```
 
 Example:
@@ -40,7 +40,7 @@ https://sub.example.com/sub/manual-token-change-me
 The local file inside the RF Entry bundle is:
 
 ```text
-public/sub/<subscriptionToken>
+public/sub/<clientAccess.users[].subscriptionToken>
 ```
 
 That file is served over HTTPS through HAProxy and Caddy on the RF Entry node.
@@ -59,7 +59,8 @@ The Foreign Exit received a VLESS request with a UUID that is not listed in its 
 
 Most likely causes:
 
-- RF Entry `clientAccess.profiles[].uuid` does not match the Foreign Exit profile UUID.
+- RF Entry `clientAccess.exitProfiles[].uuid` does not match the Foreign Exit shared exit profile UUID.
+- The user subscription uses `clientAccess.users[].profileRefs[].uuid`, but the RF -> Foreign outbound must use `clientAccess.exitProfiles[].uuid`.
 - The wrong Foreign Exit runtime config was deployed.
 - RF Entry profile points to one `exitNode`, but the selected Foreign Exit runtime config contains a different profile.
 - `./manage.sh generate-config` was not run after editing `runtime.jsonc`.
@@ -72,28 +73,40 @@ Checks:
 cat config/xray.generated.json
 ```
 
-On RF Entry, verify the outbound user UUID and email for the selected profile.
+On RF Entry, verify the inbound client UUID from `profileRefs[]`, and the outbound user UUID/email from `exitProfiles[]`.
 
-On Foreign Exit, verify the inbound client UUID and email. They must match the RF Entry outbound for that profile.
+On Foreign Exit, verify the inbound client UUID and email. They must match the RF Entry outbound for that shared exit profile.
 
 ## Empty Or Missing UUID In Generated Xray Config
 
-If generated Xray config contains a client without a UUID, `clientAccess.profiles[]` is malformed or the expected profile section is missing.
+If generated Xray config contains a client without a UUID, `clientAccess.exitProfiles[]` or `clientAccess.users[].profileRefs[]` is malformed.
 
 The current public config section is:
 
 ```jsonc
 "clientAccess": {
-  "enabled": true,
-  "profiles": [
+  "exitProfiles": [
     {
+      "id": "us-google",
       "uuid": "..."
+    }
+  ],
+  "users": [
+    {
+      "id": "manual-user",
+      "enabled": true,
+      "profileRefs": [
+        {
+          "profile": "us-google",
+          "uuid": "..."
+        }
+      ]
     }
   ]
 }
 ```
 
-Older access sections are not supported. The runtime validator should fail if `clientAccess` is missing or if a stable profile does not contain a valid UUID.
+Older access sections are not supported. The runtime validator should fail if `clientAccess.exitProfiles[]` is missing, if RF Entry `clientAccess.users[]` is missing, if an enabled user has no profile refs, or if a required UUID is malformed.
 
 ## Timeout On Hiddify Or Karing
 
@@ -158,7 +171,7 @@ In generated Foreign Exit `xray.generated.json`, the inbound client for RF Entry
 
 The client connects only to RF Entry. Foreign Exit selection is controlled by the selected subscription profile.
 
-Check RF Entry `clientAccess.profiles[]`:
+Check RF Entry `clientAccess.exitProfiles[]`:
 
 ```jsonc
 {

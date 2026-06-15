@@ -86,11 +86,10 @@
   ],
 
   // Manual client access.
-  // Foreign Exit only needs inbound user credentials. It does not
-  // need subscriptionToken or client Reality public key. UUIDs here must match
-  // RF Entry clientAccess profiles, otherwise RF can connect but the exit rejects auth.
+  // Foreign Exit only needs shared exit profile credentials. It does not need
+  // entry users, subscriptionToken, or client Reality public key. The shared
+  // UUID here must match the RF Entry clientAccess.exitProfiles[] UUID.
   "clientAccess": {
-    "enabled": true,
     "transport": {
       // Must match RF Entry clientAccess.transport. Foreign Exit only uses
       // exitFlow for RF Entry -> Foreign Exit inbound clients.
@@ -101,16 +100,16 @@
         "concurrency": 8
       }
     },
-    "profiles": [
+    "exitProfiles": [
       {
-        "id": "manual-user-de-foreign-1",
+        "id": "de-foreign-1",
         "name": "Germany - Foreign 1",
         "country": "DE",
         "mode": "stable",
         "entryNode": "rf-1",
         "exitPool": "exit-pool-de",
         "exitNode": "foreign-1",
-        // Must match the RF Entry profile UUID.
+        // Must match the RF Entry shared exit profile UUID.
         "uuid": "00000000-0000-4000-8000-000000000001"
       }
     ]

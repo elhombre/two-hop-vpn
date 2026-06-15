@@ -259,7 +259,10 @@ function renderExampleNotes(context, subscription) {
   ];
 
   if (subscription.enabled) {
-    lines.push("", `Client access subscription URL: ${subscription.subscriptionUrl}`);
+    lines.push("", "Client access subscription URLs:");
+    for (const user of subscription.users) {
+      lines.push(`- ${user.id}: ${user.subscriptionUrl}`);
+    }
   }
 
   return `${lines.join("\n")}\n`;
@@ -507,19 +510,25 @@ function validateClientAccess(clientAccess, nodes, countries, exitPools, localNo
     errors.push("clientAccess must be an object");
     return;
   }
-  if (clientAccess.enabled !== true) {
-    errors.push("clientAccess.enabled must be true");
+  const exitProfiles = requiredArray(clientAccess.exitProfiles, "clientAccess.exitProfiles", errors);
+  if (exitProfiles.length === 0) {
+    errors.push("clientAccess.exitProfiles must not be empty");
   }
-  const profiles = requiredArray(clientAccess.profiles, "clientAccess.profiles", errors);
-  if (profiles.length === 0) {
-    errors.push("clientAccess.profiles must not be empty");
+  const exitProfileIds = new Set();
+  const exitProfileUuids = new Set();
+  for (const profile of exitProfiles) {
+    validateClientAccessExitProfile(profile, nodes, countries, exitPools, localNode, exitProfileIds, exitProfileUuids, errors);
   }
-  const needsSubscriptionFields = localNode?.role === "rf-entry" && profiles.some((profile) => profile.entryNode === localNode.id);
 
+  const exitProfilesById = mapById(exitProfiles, "clientAccess.exitProfiles", errors);
+  const users = Array.isArray(clientAccess.users) ? clientAccess.users : [];
+  if (localNode?.role === "rf-entry" && users.length === 0) {
+    errors.push("clientAccess.users must not be empty for rf-entry");
+  } else if (clientAccess.users !== undefined && !Array.isArray(clientAccess.users)) {
+    errors.push("clientAccess.users must be an array");
+  }
+  const needsSubscriptionFields = localNode?.role === "rf-entry" && users.some((user) => user?.enabled === true && Array.isArray(user.profileRefs) && user.profileRefs.some((ref) => exitProfilesById.get(ref.profile)?.entryNode === localNode.id));
   if (needsSubscriptionFields) {
-    const user = requiredObject(clientAccess.user, "clientAccess.user", errors);
-    requiredString(user.id, "clientAccess.user.id", errors);
-    requiredString(user.subscriptionToken, "clientAccess.user.subscriptionToken", errors);
     const reality = requiredObject(clientAccess.reality, "clientAccess.reality", errors);
     requiredString(reality.sni, "clientAccess.reality.sni", errors);
     requiredString(reality.publicKey, "clientAccess.reality.publicKey", errors);
@@ -527,37 +536,122 @@ function validateClientAccess(clientAccess, nodes, countries, exitPools, localNo
   }
   validateClientAccessTransport(clientAccess.transport, errors);
 
-  for (const profile of profiles) {
-    if (!profile || typeof profile !== "object") {
-      errors.push("clientAccess.profiles entries must be objects");
-      continue;
+  const userIds = new Set();
+  const subscriptionTokens = new Set();
+  const clientUuids = new Set(exitProfileUuids);
+  for (const user of users) {
+    validateClientAccessUser(user, exitProfilesById, localNode, userIds, subscriptionTokens, clientUuids, errors);
+  }
+}
+
+function validateClientAccessExitProfile(profile, nodes, countries, exitPools, localNode, profileIds, uuids, errors) {
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+    errors.push("clientAccess.exitProfiles entries must be objects");
+    return;
+  }
+  requiredString(profile.id, "clientAccess.exitProfiles[].id", errors);
+  if (typeof profile.id === "string" && profile.id.length > 0) {
+    if (profileIds.has(profile.id)) {
+      errors.push(`clientAccess.exitProfiles has duplicate id: ${profile.id}`);
     }
-    requiredString(profile.id, "clientAccess.profile.id", errors);
-    if (profile.entryNode === localNode?.id && !nodes.has(profile.entryNode)) {
-      errors.push(`clientAccess.profile ${profile.id} references missing entryNode ${profile.entryNode}`);
+    profileIds.add(profile.id);
+  }
+
+  if (profile.entryNode === localNode?.id && !nodes.has(profile.entryNode)) {
+    errors.push(`clientAccess.exitProfile ${profile.id} references missing entryNode ${profile.entryNode}`);
+  }
+  if (!countries.has(profile.country)) {
+    errors.push(`clientAccess.exitProfile ${profile.id} references missing country ${profile.country}`);
+  }
+  if (!exitPools.has(profile.exitPool)) {
+    errors.push(`clientAccess.exitProfile ${profile.id} references missing exitPool ${profile.exitPool}`);
+  } else if (profile.exitNode !== undefined) {
+    requiredString(profile.exitNode, `clientAccess.exitProfile ${profile.id}.exitNode`, errors);
+    const exitNode = nodes.get(profile.exitNode);
+    const exitPool = exitPools.get(profile.exitPool);
+    if (!exitNode) {
+      errors.push(`clientAccess.exitProfile ${profile.id} references missing exitNode ${profile.exitNode}`);
+    } else if (exitNode.role !== "foreign-exit") {
+      errors.push(`clientAccess.exitProfile ${profile.id} exitNode ${profile.exitNode} is not foreign-exit`);
+    } else if (!exitNode.stable?.enabled) {
+      errors.push(`clientAccess.exitProfile ${profile.id} exitNode ${profile.exitNode} has stable.enabled=false`);
+    } else if (!exitPool.nodes.includes(profile.exitNode)) {
+      errors.push(`clientAccess.exitProfile ${profile.id} exitNode ${profile.exitNode} is not part of exitPool ${profile.exitPool}`);
     }
-    if (!countries.has(profile.country)) {
-      errors.push(`clientAccess.profile ${profile.id} references missing country ${profile.country}`);
+  }
+  if (profile.mode === "stable" && !isUuid(profile.uuid)) {
+    errors.push(`clientAccess.exitProfile ${profile.id}.uuid must be a UUID for stable mode`);
+  } else if (profile.mode === "stable") {
+    if (uuids.has(profile.uuid)) {
+      errors.push(`clientAccess.exitProfiles have duplicate uuid: ${profile.uuid}`);
     }
-    if (!exitPools.has(profile.exitPool)) {
-      errors.push(`clientAccess.profile ${profile.id} references missing exitPool ${profile.exitPool}`);
-    } else if (profile.exitNode !== undefined) {
-      requiredString(profile.exitNode, `clientAccess.profile ${profile.id}.exitNode`, errors);
-      const exitNode = nodes.get(profile.exitNode);
-      const exitPool = exitPools.get(profile.exitPool);
-      if (!exitNode) {
-        errors.push(`clientAccess.profile ${profile.id} references missing exitNode ${profile.exitNode}`);
-      } else if (exitNode.role !== "foreign-exit") {
-        errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not foreign-exit`);
-      } else if (!exitNode.stable?.enabled) {
-        errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} has stable.enabled=false`);
-      } else if (!exitPool.nodes.includes(profile.exitNode)) {
-        errors.push(`clientAccess.profile ${profile.id} exitNode ${profile.exitNode} is not part of exitPool ${profile.exitPool}`);
+    uuids.add(profile.uuid);
+  }
+}
+
+function validateClientAccessUser(user, exitProfiles, localNode, userIds, subscriptionTokens, clientUuids, errors) {
+  if (!user || typeof user !== "object" || Array.isArray(user)) {
+    errors.push("clientAccess.users entries must be objects");
+    return;
+  }
+  requiredString(user.id, "clientAccess.users[].id", errors);
+  if (typeof user.id === "string" && user.id.length > 0) {
+    if (userIds.has(user.id)) {
+      errors.push(`clientAccess.users has duplicate id: ${user.id}`);
+    }
+    userIds.add(user.id);
+  }
+  if (typeof user.enabled !== "boolean") {
+    errors.push(`clientAccess.users[${user.id}].enabled must be boolean`);
+  }
+  if (user.enabled !== true) {
+    return;
+  }
+
+  const profileRefs = requiredArray(user.profileRefs, `clientAccess.users[${user.id}].profileRefs`, errors);
+  if (profileRefs.length === 0) {
+    errors.push(`clientAccess.users[${user.id}].profileRefs must not be empty when enabled=true`);
+  }
+  const needsSubscriptionFields = localNode?.role === "rf-entry" && profileRefs.some((ref) => exitProfiles.get(ref.profile)?.entryNode === localNode.id);
+  if (needsSubscriptionFields) {
+    requiredString(user.plan, `clientAccess.users[${user.id}].plan`, errors);
+    requiredString(user.subscriptionToken, `clientAccess.users[${user.id}].subscriptionToken`, errors);
+    if (typeof user.subscriptionToken === "string" && user.subscriptionToken.length > 0) {
+      if (subscriptionTokens.has(user.subscriptionToken)) {
+        errors.push(`clientAccess.users has duplicate subscriptionToken: ${user.subscriptionToken}`);
       }
+      subscriptionTokens.add(user.subscriptionToken);
     }
-    if (profile.mode === "stable" && !isUuid(profile.uuid)) {
-      errors.push(`clientAccess.profile ${profile.id}.uuid must be a UUID for stable mode`);
+  }
+
+  const profileRefIds = new Set();
+  for (const profileRef of profileRefs) {
+    validateClientAccessProfileRef(user, profileRef, exitProfiles, profileRefIds, clientUuids, errors);
+  }
+}
+
+function validateClientAccessProfileRef(user, profileRef, exitProfiles, profileRefIds, clientUuids, errors) {
+  if (!profileRef || typeof profileRef !== "object" || Array.isArray(profileRef)) {
+    errors.push(`clientAccess.users[${user.id}].profileRefs entries must be objects`);
+    return;
+  }
+  requiredString(profileRef.profile, `clientAccess.users[${user.id}].profileRefs[].profile`, errors);
+  if (typeof profileRef.profile === "string" && profileRef.profile.length > 0) {
+    if (profileRefIds.has(profileRef.profile)) {
+      errors.push(`clientAccess.users[${user.id}].profileRefs has duplicate profile: ${profileRef.profile}`);
     }
+    profileRefIds.add(profileRef.profile);
+    if (!exitProfiles.has(profileRef.profile)) {
+      errors.push(`clientAccess.users[${user.id}].profileRefs references missing exitProfile: ${profileRef.profile}`);
+    }
+  }
+  if (!isUuid(profileRef.uuid)) {
+    errors.push(`clientAccess.users[${user.id}].profileRefs ${profileRef.profile}.uuid must be a UUID`);
+  } else {
+    if (clientUuids.has(profileRef.uuid)) {
+      errors.push(`clientAccess users and exitProfiles have duplicate uuid: ${profileRef.uuid}`);
+    }
+    clientUuids.add(profileRef.uuid);
   }
 }
 
@@ -638,56 +732,69 @@ function renderRuntimeGenerated(runtime) {
 }
 
 function renderRoutingConfig(runtime, node) {
+  const userProfiles = enabledUserProfiles(runtime.clientAccess);
   return {
     countries: runtime.countries,
     exitPools: runtime.exitPools,
-    profiles: runtime.clientAccess?.enabled
-      ? runtime.clientAccess.profiles.map((profile) => ({
+    profiles: userProfiles.map(({ user, profileRef, profile }) => ({
+      userId: user.id,
+      id: `${user.id}.${profile.id}`,
+      exitProfileId: profile.id,
+      name: profile.name,
+      country: profile.country,
+      mode: profile.mode,
+      strictCountry: profile.mode !== "auto",
+      entryNode: profile.entryNode,
+      exitPool: profile.exitPool,
+      exitNode: profile.exitNode ?? null,
+      clientUuid: profileRef.uuid,
+      visibleOnNode: node.id === profile.entryNode || profileTargetsExitNode(runtime, profile, node.id),
+    })),
+  };
+}
+
+function renderSubscriptionConfig(runtime, node) {
+  if (node.role !== "rf-entry") {
+    return {
+      enabled: false,
+      reason: "subscription output is emitted by rf-entry bundles",
+    };
+  }
+  const users = enabledUsers(runtime.clientAccess)
+    .map((user) => {
+      const profiles = userProfileRefs(runtime.clientAccess, user)
+        .filter(({ profile }) => profile.entryNode === node.id)
+        .map(({ profileRef, profile }) => ({
           id: profile.id,
           name: profile.name,
           country: profile.country,
           mode: profile.mode,
           strictCountry: profile.mode !== "auto",
-          entryNode: profile.entryNode,
-          exitPool: profile.exitPool,
-          exitNode: profile.exitNode ?? null,
-          visibleOnNode: node.id === profile.entryNode || profileTargetsExitNode(runtime, profile, node.id),
-        }))
-      : [],
-  };
-}
-
-function renderSubscriptionConfig(runtime, node) {
-  if (!runtime.clientAccess?.enabled || node.role !== "rf-entry") {
+          rawLink: renderVlessLink(runtime, node, profileRef, profile),
+        }));
+      return {
+        id: user.id,
+        plan: user.plan,
+        token: user.subscriptionToken,
+        subscriptionUrl: `${runtime.project.subscriptionBaseUrl.replace(/\/$/, "")}/sub/${encodeURIComponent(user.subscriptionToken)}`,
+        profiles,
+      };
+    })
+    .filter((user) => user.profiles.length > 0);
+  if (users.length === 0) {
     return {
       enabled: false,
-      reason: node.role === "rf-entry" ? "clientAccess profiles disabled" : "subscription output is emitted by rf-entry bundles",
+      reason: "no enabled clientAccess users have profiles for this RF Entry node",
     };
   }
-  const token = runtime.clientAccess.user.subscriptionToken;
   return {
     enabled: true,
-    user: {
-      id: runtime.clientAccess.user.id,
-      plan: runtime.clientAccess.user.plan,
-    },
-    token,
-    subscriptionUrl: `${runtime.project.subscriptionBaseUrl.replace(/\/$/, "")}/sub/${encodeURIComponent(token)}`,
     formats: ["raw-share-links"],
-    profiles: runtime.clientAccess.profiles
-      .filter((profile) => profile.entryNode === node.id)
-      .map((profile) => ({
-        id: profile.id,
-        name: profile.name,
-        country: profile.country,
-        mode: profile.mode,
-        strictCountry: profile.mode !== "auto",
-        rawLink: renderVlessLink(runtime, node, profile),
-      })),
+    users,
   };
 }
 
-function renderVlessLink(runtime, node, profile) {
+function renderVlessLink(runtime, node, profileRef, profile) {
   const reality = runtime.clientAccess.reality;
   const params = new URLSearchParams({
     type: "tcp",
@@ -702,7 +809,7 @@ function renderVlessLink(runtime, node, profile) {
   if (flow) {
     params.set("flow", flow);
   }
-  return `vless://${profile.uuid}@${node.host}:${node.stable.port}?${params.toString()}#${encodeURIComponent(profile.name)}`;
+  return `vless://${profileRef.uuid}@${node.host}:${node.stable.port}?${params.toString()}#${encodeURIComponent(profile.name)}`;
 }
 
 function renderNodeEdgeMetadata(runtime, node) {
@@ -800,31 +907,40 @@ function renderXrayConfig(runtime, node) {
 }
 
 function renderRfEntryXrayConfig(runtime, node) {
-  const profiles = runtime.clientAccess?.enabled ? runtime.clientAccess.profiles.filter((profile) => profile.entryNode === node.id && profile.mode === "stable") : [];
+  const userProfiles = enabledUserProfiles(runtime.clientAccess).filter(({ profile }) => profile.entryNode === node.id && profile.mode === "stable");
   const outbounds = [];
   const rules = [];
-  for (const profile of profiles) {
+  const outboundsByTag = new Set();
+  for (const userProfile of userProfiles) {
+    const { profile } = userProfile;
     const exitNode = exitNodeForProfile(runtime, profile);
     const outboundTag = `stable-${profile.country.toLowerCase()}-${exitNode.id}`;
-    outbounds.push(renderVlessRealityOutbound(runtime.clientAccess, outboundTag, exitNode, profile));
-    rules.push({ type: "field", user: [profileEmail(profile)], outboundTag });
+    if (!outboundsByTag.has(outboundTag)) {
+      outbounds.push(renderVlessRealityOutbound(runtime.clientAccess, outboundTag, exitNode, profile));
+      outboundsByTag.add(outboundTag);
+    }
+    rules.push({ type: "field", user: [entryProfileEmail(userProfile)], outboundTag });
   }
   outbounds.push({ tag: "blocked", protocol: "blackhole", settings: {} });
   return {
     log: { loglevel: "warning" },
-    inbounds: [renderVlessRealityInbound("client-stable-in", node, profiles, clientFlow(runtime.clientAccess))],
+    inbounds: [renderVlessRealityInbound("client-stable-in", node, userProfiles.map((userProfile) => ({
+      id: userProfile.profileRef.uuid,
+      email: entryProfileEmail(userProfile),
+    })), clientFlow(runtime.clientAccess))],
     outbounds,
     routing: { domainStrategy: "AsIs", rules },
   };
 }
 
 function renderForeignExitXrayConfig(runtime, node) {
-  const profiles = runtime.clientAccess?.enabled
-    ? runtime.clientAccess.profiles.filter((profile) => profile.mode === "stable" && profileTargetsExitNode(runtime, profile, node.id))
-    : [];
+  const profiles = exitProfiles(runtime.clientAccess).filter((profile) => profile.mode === "stable" && profileTargetsExitNode(runtime, profile, node.id));
   return {
     log: { loglevel: "warning" },
-    inbounds: [renderVlessRealityInbound("rf-stable-in", node, profiles, exitFlow(runtime.clientAccess))],
+    inbounds: [renderVlessRealityInbound("rf-stable-in", node, profiles.map((profile) => ({
+      id: profile.uuid,
+      email: exitProfileEmail(profile),
+    })), exitFlow(runtime.clientAccess))],
     outbounds: [
       { tag: "direct", protocol: "freedom", settings: {} },
       { tag: "blocked", protocol: "blackhole", settings: {} },
@@ -833,17 +949,14 @@ function renderForeignExitXrayConfig(runtime, node) {
   };
 }
 
-function renderVlessRealityInbound(tag, node, profiles, flow) {
+function renderVlessRealityInbound(tag, node, clients, flow) {
   return {
     tag,
     listen: "0.0.0.0",
     port: xrayStableListenPort(node),
     protocol: "vless",
     settings: {
-      clients: profiles.map((profile) => withOptionalFlow({
-        id: profile.uuid,
-        email: profileEmail(profile),
-      }, flow)),
+      clients: clients.map((client) => withOptionalFlow(client, flow)),
       decryption: "none",
     },
     streamSettings: {
@@ -882,7 +995,7 @@ function renderVlessRealityOutbound(clientAccess, tag, exitNode, profile) {
           users: [
             {
               id: profile.uuid,
-              email: profileEmail(profile),
+              email: exitProfileEmail(profile),
               encryption: "none",
               ...optionalFlow(exitFlow(clientAccess)),
             },
@@ -930,6 +1043,29 @@ function firstExitNodeForProfile(runtime, profile) {
   return runtime.nodes.find((node) => node.id === nodeId);
 }
 
+function enabledUsers(clientAccess) {
+  return Array.isArray(clientAccess?.users) ? clientAccess.users.filter((user) => user.enabled === true) : [];
+}
+
+function exitProfiles(clientAccess) {
+  return Array.isArray(clientAccess?.exitProfiles) ? clientAccess.exitProfiles : [];
+}
+
+function exitProfilesById(clientAccess) {
+  return new Map(exitProfiles(clientAccess).map((profile) => [profile.id, profile]));
+}
+
+function userProfileRefs(clientAccess, user) {
+  const profiles = exitProfilesById(clientAccess);
+  return Array.isArray(user.profileRefs)
+    ? user.profileRefs.map((profileRef) => ({ profileRef, profile: profiles.get(profileRef.profile) })).filter(({ profile }) => profile)
+    : [];
+}
+
+function enabledUserProfiles(clientAccess) {
+  return enabledUsers(clientAccess).flatMap((user) => userProfileRefs(clientAccess, user).map(({ profileRef, profile }) => ({ user, profileRef, profile })));
+}
+
 function clientFlow(clientAccess) {
   return normalizeFlow(clientAccess?.transport?.clientFlow ?? "xtls-rprx-vision");
 }
@@ -958,8 +1094,12 @@ function withOptionalFlow(value, flow) {
   return flow ? { ...value, flow } : value;
 }
 
-function profileEmail(profile) {
-  return `${profile.id}@${profile.entryNode}`;
+function entryProfileEmail(userProfile) {
+  return `${userProfile.user.id}.${userProfile.profile.id}@${userProfile.profile.entryNode}`;
+}
+
+function exitProfileEmail(profile) {
+  return `exit.${profile.id}@${profile.entryNode}`;
 }
 
 async function renderPublicSubscription(subscription) {
@@ -969,8 +1109,10 @@ async function renderPublicSubscription(subscription) {
   }
   const subDir = path.join(bundleRoot, "public", "sub");
   await mkdir(subDir, { recursive: true });
-  const body = `${subscription.profiles.map((profile) => profile.rawLink).join("\n")}\n`;
-  await writeFile(path.join(subDir, subscription.token), body, "utf8");
+  for (const user of subscription.users) {
+    const body = `${user.profiles.map((profile) => profile.rawLink).join("\n")}\n`;
+    await writeFile(path.join(subDir, user.token), body, "utf8");
+  }
 }
 
 async function writeJson(filePath, value) {

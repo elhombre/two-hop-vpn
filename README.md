@@ -24,19 +24,21 @@ This project is for operators who want a reproducible, inspectable deployment in
 - `Build config`: `config/examples/build.example.jsonc`. It tells the builder which role bundles to create and which Docker images they use.
 - `Bundle`: a portable `vpn-bundle/` directory or `.tar.gz` archive for one role, either RF Entry or Foreign Exit. It contains `docker-compose.yml`, `manage.sh`, metadata, templates, and an editable runtime config example. The same Foreign Exit bundle can be reused on multiple VPS hosts with different `runtime.jsonc` files.
 - `Client`: the user's VPN app. The examples are designed around clients that can import VLESS Reality subscription links.
-- `clientAccess`: the required manual client access block in `runtime.jsonc`. It defines the subscription token, client-facing Reality parameters, inter-node transport settings, and profile UUIDs used by generated Xray configs.
+- `clientAccess`: the required manual client access block in `runtime.jsonc`. It defines entry users, per-user subscription tokens, shared exit profiles, client-facing Reality parameters, and inter-node transport settings.
 - `Docker-only bundle`: a bundle built with `--save-images`, so the VPS can load images from `images/*.tar` instead of pulling them from registries.
 - `Exit pool`: a named group of Foreign Exit nodes for a country. The RF Entry example uses one pool, `exit-pool-de`, with two optional Foreign Exit nodes.
-- `exitNode`: an optional `clientAccess.profiles[]` field that pins one client-visible profile to one concrete Foreign Exit node from its `exitPool`.
+- `exitNode`: an optional `clientAccess.exitProfiles[]` field that pins one shared exit profile to one concrete Foreign Exit node from its `exitPool`.
+- `Exit profile`: a shared output profile under `clientAccess.exitProfiles[]`. It defines the visible profile name, target country/exit, and the intermediate RF -> Foreign VLESS UUID. Users attach these profiles through `profileRefs[]`.
 - `Foreign Exit`: the exit VPS outside Russia, or in whichever country you want traffic to exit from. It receives traffic from RF Entry and sends it to the internet, so websites see the Foreign Exit as the source IP.
 - `Generated runtime artifacts`: files under `vpn-bundle/config/` created by `./manage.sh generate-config`, including Xray, routing, HAProxy, Caddy, and subscription output.
 - `Inter-node transport`: the RF Entry to Foreign Exit connection. By default it uses VLESS Reality without XTLS Vision flow and with Xray mux enabled, so browser traffic can reuse a small number of long-lived TCP connections between VPS hosts.
-- `Profile`: one client-visible connection option inside the subscription, such as `Germany - Foreign 1`. In the example config it is represented by `clientAccess.profiles[]`.
+- `Profile ref`: one user-to-profile attachment under `clientAccess.users[].profileRefs[]`. It points to a shared exit profile and defines that user's Client -> RF Entry UUID.
 - `RF Entry`: the Russian Federation entry VPS, usually a server located in Russia. Users connect to this node first. It accepts VLESS Reality on `443/tcp`, serves the subscription domain, and forwards traffic to a Foreign Exit.
 - `Runtime config`: `runtime.jsonc` on a VPS. It is copied from `example.config.jsonc` and then customized with real domains, Reality keys, short IDs, tokens, and UUIDs.
 - `Stable transport`: the implemented transport mode in this repository. It uses Xray-core with VLESS Reality over TCP/443.
 - `Subscription URL`: the HTTPS URL imported by the client, for example `https://sub.example.com/sub/<token>`. It points to generated profile links.
 - `Two-hop path`: the full route `Client -> RF Entry -> Foreign Exit -> Internet`. The client does not connect directly to Foreign Exit.
+- `User`: one manually declared entry account under `clientAccess.users[]`. Each user has its own `enabled` flag, subscription token, and `profileRefs[]`. Disabled users are ignored by generated Xray and subscription configs.
 - `VLESS Reality`: the Xray protocol/security combination used for the public client connection and the RF-to-Foreign connection. Reality requires a private/public key pair and short IDs.
 - `Xray-core`: the proxy runtime used inside the RF Entry and Foreign Exit containers.
 
@@ -185,9 +187,10 @@ Replace at least:
 - Foreign Exit `node.reality.publicKey`.
 - RF Entry `peers[].reality.publicKey`.
 - Reality `shortIds`.
-- `clientAccess.user.subscriptionToken`.
-- `clientAccess.profiles[].uuid`.
-- `clientAccess.profiles[].exitNode`, if you add, remove, or rename Foreign Exit nodes.
+- `clientAccess.users[].subscriptionToken` for every enabled RF Entry user.
+- `clientAccess.users[].profileRefs[].uuid` for Client -> RF Entry access.
+- `clientAccess.exitProfiles[].uuid` for shared RF Entry -> Foreign Exit access.
+- `clientAccess.exitProfiles[].exitNode`, if you add, remove, or rename Foreign Exit nodes.
 
 Do not commit real `runtime.jsonc` files, Reality private keys, subscription tokens, UUIDs, or production environment files.
 
@@ -203,20 +206,20 @@ Generate a short ID:
 openssl rand -hex 8
 ```
 
-Generate a profile UUID:
+Generate a VLESS UUID:
 
 ```sh
 docker run --rm node:22-alpine node -e "console.log(crypto.randomUUID())"
 ```
 
-The UUID used by the RF Entry profile must match the UUID accepted by the Foreign Exit profile.
+The UUID in `clientAccess.users[].profileRefs[]` is used by the client to enter RF Entry. The UUID in `clientAccess.exitProfiles[]` is the shared intermediate RF -> Foreign user and must match the UUID accepted by Foreign Exit.
 
-To expose several Foreign Exit nodes in Hiddify or another subscription client, create one `clientAccess.profiles[]` entry per exit. Each profile must have a unique `id`, `name`, and `uuid`, and should set `exitNode` to the concrete Foreign Exit node:
+To expose several Foreign Exit nodes in Hiddify or another subscription client, create shared `clientAccess.exitProfiles[]` once, then attach them to each enabled user through `clientAccess.users[].profileRefs[]`. Each enabled user gets a separate subscription URL.
 
 ```jsonc
-"profiles": [
+"exitProfiles": [
   {
-    "id": "manual-user-de-foreign-1",
+    "id": "de-foreign-1",
     "name": "Germany - Foreign 1",
     "country": "DE",
     "mode": "stable",
@@ -224,16 +227,20 @@ To expose several Foreign Exit nodes in Hiddify or another subscription client, 
     "exitPool": "exit-pool-de",
     "exitNode": "foreign-1",
     "uuid": "00000000-0000-4000-8000-000000000001"
-  },
+  }
+],
+"users": [
   {
-    "id": "manual-user-de-foreign-2",
-    "name": "Germany - Foreign 2",
-    "country": "DE",
-    "mode": "stable",
-    "entryNode": "rf-1",
-    "exitPool": "exit-pool-de",
-    "exitNode": "foreign-2",
-    "uuid": "00000000-0000-4000-8000-000000000002"
+    "id": "first-user",
+    "enabled": true,
+    "plan": "manual",
+    "subscriptionToken": "first-token-change-me",
+    "profileRefs": [
+      {
+        "profile": "de-foreign-1",
+        "uuid": "00000000-0000-4000-8000-000000000101"
+      }
+    ]
   }
 ]
 ```
@@ -257,10 +264,10 @@ The default inter-node transport is defined in `clientAccess.transport`:
 
 ## Client Import URL
 
-After the RF Entry bundle runs `./manage.sh generate-config`, it creates a subscription file for the manual client access user. This is the link you import into Hiddify or another compatible client:
+After the RF Entry bundle runs `./manage.sh generate-config`, it creates one subscription file per enabled `clientAccess.users[]` entry that has profiles for this RF Entry. This is the link you import into Hiddify or another compatible client:
 
 ```text
-<project.subscriptionBaseUrl>/sub/<clientAccess.user.subscriptionToken>
+<project.subscriptionBaseUrl>/sub/<clientAccess.users[].subscriptionToken>
 ```
 
 For the default example values:
@@ -276,9 +283,13 @@ If you use DuckDNS-style names and set:
   "subscriptionBaseUrl": "https://sub-example.duckdns.org"
 },
 "clientAccess": {
-  "user": {
-    "subscriptionToken": "my-secret-token"
-  }
+  "users": [
+    {
+      "id": "manual-user",
+      "enabled": true,
+      "subscriptionToken": "my-secret-token"
+    }
+  ]
 }
 ```
 
@@ -315,13 +326,13 @@ For a bundle built with `npm run build:images`, run `./manage.sh load` before `.
 After `generate-config`, the RF bundle writes the subscription file to:
 
 ```text
-public/sub/<subscriptionToken>
+public/sub/<clientAccess.users[].subscriptionToken>
 ```
 
 Import this public subscription URL into Hiddify or another compatible client:
 
 ```text
-https://sub.example.com/sub/<subscriptionToken>
+https://sub.example.com/sub/<clientAccess.users[].subscriptionToken>
 ```
 
 ## Deploy Foreign Exit
